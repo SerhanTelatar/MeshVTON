@@ -34,10 +34,11 @@ class TryOnPipeline(nn.Module):
     def from_config(cls, config: dict) -> "TryOnPipeline":
         """Build pipeline from a configuration dictionary."""
         person_unet = PersonUNet(
-            in_channels=config.get("person_in_channels", 9),
-            model_channels=config.get("model_channels", 320),
-            out_channels=config.get("out_channels", 4),
-            context_dim=config.get("context_dim", 768),
+                    in_channels=config.get("person_in_channels", 9),
+                    model_channels=config.get("model_channels", 320),
+                    out_channels=config.get("out_channels", 4),
+                    context_dim=config.get("context_dim", 768),
+                    controlnet_channels=9,  # ← bunu ekle/düzelt
         )
         garment_unet = GarmentUNet(
             in_channels=config.get("garment_in_channels", 4),
