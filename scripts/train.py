@@ -53,7 +53,7 @@ def main():
     from torch.utils.data import Subset
     import random
 
-    subset_ratio = 0.3  # Use 30% of the dataset
+    subset_ratio = 0.1  # Use 10% of the dataset
     total = len(train_dataset)
     indices = random.sample(range(total), int(total * subset_ratio))
     train_dataset = Subset(train_dataset, indices)
