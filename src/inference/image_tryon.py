@@ -106,7 +106,7 @@ class ImageTryOn:
             densepose_tensor, size=(self.resolution, self.resolution), mode="bilinear", align_corners=False
         )
         # Use only first channel for conditioning
-        densepose_cond = densepose_tensor[:, :1]
+        densepose_cond = densepose_tensor[:, :3]
 
         # Generator for reproducibility
         generator = None
