@@ -27,7 +27,7 @@ data:
 
 # --- Training ---
 training:
-  epochs: 20
+  epochs: 5
   gradient_accumulation_steps: 8
   mixed_precision: "fp16"  # fp16, bf16, or "no"
   gradient_checkpointing: true
