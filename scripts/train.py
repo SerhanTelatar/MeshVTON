@@ -17,6 +17,8 @@ def main():
     parser.add_argument("--config", type=str, default="configs/train.yaml")
     parser.add_argument("--resume", type=str, default=None, help="Resume from checkpoint")
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--local", action="store_true",
+                        help="Use placeholder models (no HuggingFace download)")
     args = parser.parse_args()
 
     # Load config
@@ -33,9 +35,28 @@ def main():
     print(f"Seed: {seed}")
 
     # Build model
-    pipeline = TryOnPipeline.from_config(config.get("model", {}))
-    num_params = sum(p.numel() for p in pipeline.parameters() if p.requires_grad)
-    print(f"Trainable parameters: {num_params:,}")
+    model_cfg = config.get("model", {})
+
+    if args.local or not model_cfg.get("pretrained_idm_vton"):
+        # Local/dev mode — no HuggingFace download
+        print("Building pipeline with placeholder modules (local mode)")
+        pipeline = TryOnPipeline.from_config(model_cfg)
+    else:
+        # Production mode — load IDM-VTON from HuggingFace
+        pipeline = TryOnPipeline.from_pretrained(
+            pretrained_model_id=model_cfg["pretrained_idm_vton"],
+            controlnet_3d_channels=model_cfg.get("controlnet_3d_channels", 9),
+        )
+
+    # Parameter counts
+    total_params = sum(p.numel() for p in pipeline.parameters())
+    trainable_params = sum(p.numel() for p in pipeline.parameters() if p.requires_grad)
+    frozen_params = total_params - trainable_params
+    print(f"\nModel Summary:")
+    print(f"  Total parameters:     {total_params:>15,}")
+    print(f"  Trainable (ControlNet3D): {trainable_params:>11,}")
+    print(f"  Frozen (IDM-VTON):    {frozen_params:>15,}")
+    print(f"  Trainable ratio:      {100 * trainable_params / max(total_params, 1):>14.1f}%\n")
 
     # Build dataset
     data_cfg = config.get("data", {})
@@ -61,11 +82,11 @@ def main():
 
     train_loader = DataLoader(
         train_dataset,
-        batch_size=data_cfg.get("batch_size", 8),
+        batch_size=data_cfg.get("batch_size", 1),
         shuffle=True,
-        num_workers=data_cfg.get("num_workers", 4),
+        num_workers=data_cfg.get("num_workers", 2),
         pin_memory=data_cfg.get("pin_memory", True),
-        persistent_workers=data_cfg.get("persistent_workers", True) if data_cfg.get("num_workers", 4) > 0 else False,
+        persistent_workers=data_cfg.get("persistent_workers", True) if data_cfg.get("num_workers", 2) > 0 else False,
         drop_last=True,
     )
 
@@ -77,7 +98,7 @@ def main():
             pairs_file=val_pairs, data_root=aug_cfg.get("data_root", "data"),
             resolution=aug_cfg.get("image", {}).get("resolution", 512),
         )
-        val_loader = DataLoader(val_dataset, batch_size=data_cfg.get("batch_size", 8), shuffle=False, num_workers=2)
+        val_loader = DataLoader(val_dataset, batch_size=data_cfg.get("batch_size", 1), shuffle=False, num_workers=2)
 
     # Build trainer
     trainer = Trainer(pipeline, train_loader, val_loader, config)

@@ -2,11 +2,11 @@
 
 **Geometry-Aware Virtual Try-On: Synergizing 3D Garment Fitting with Controlled Diffusion Models**
 
-DiffFit-3D is a virtual try-on pipeline that combines 3D human body estimation (SMPL-X), differentiable garment rendering (PyTorch3D), and Latent Diffusion Models to achieve geometrically accurate, photorealistic garment fitting across diverse body shapes and camera perspectives.
+DiffFit-3D is a virtual try-on pipeline that combines 3D human body estimation (SMPL-X), differentiable garment rendering (PyTorch3D), and a pre-trained IDM-VTON backbone (SDXL-based Latent Diffusion) to achieve geometrically accurate, photorealistic garment fitting across diverse body shapes and camera perspectives.
 
 ## Architecture
 
-![DiffFit-3D Architecture](docs/architecture_diagram_3d.png)
+![DiffFit-3D Architecture](docs/architecture_diagram.png)
 
 ### Pipeline Overview
 
@@ -16,9 +16,10 @@ DiffFit-3D is a virtual try-on pipeline that combines 3D human body estimation (
 | **Body Estimation** | SMPL-X Estimator | Extracts 3D body shape, pose, and joints |
 | **Garment Fitting** | Garment Draper | Drapes 3D garment mesh onto SMPL-X body |
 | **3D Rendering** | PyTorch3D Renderer | Generates RGB render, normal map, depth map |
+| **3D Conditioning** | **ControlNet3D** (novel) | Injects 3D cues into the diffusion backbone |
 | **2D Conditioning** | DWPose + DensePose + ATR | Pose keypoints, UV maps, segmentation |
-| **Diffusion** | Dual-Branch UNet | Person UNet + Garment UNet with cross-attention |
-| **Output** | VAE Decoder | Photorealistic try-on result |
+| **Backbone** | IDM-VTON (SDXL) | Frozen TryonNet + GarmentNet with cross-attention |
+| **Output** | SDXL VAE Decoder | Photorealistic try-on result |
 
 ### What Makes It Different
 
@@ -26,16 +27,20 @@ Unlike 2D-only virtual try-on methods, DiffFit-3D uses **real 3D garment meshes*
 
 - 🔄 **Back & side views** — The model renders the garment from any angle, no hallucination needed
 - 📐 **Geometric accuracy** — 3D mesh ensures correct proportions across all body types
-- 🎭 **Normal & depth maps** — Provide the diffusion model with 3D structural cues
+- 🎭 **Normal & depth maps** — Provide the diffusion model with 3D structural cues via ControlNet3D
 - 💡 **Physically-based lighting** — Phong shading produces realistic shadows and highlights
+- 🧠 **IDM-VTON backbone** — Pre-trained SDXL-based try-on model provides state-of-the-art generation quality
 
-## Key Features
+### Training Strategy
 
-- **Perspective Consistency** — Natural garment fitting even in side/back views via 3D body estimation
-- **Body Inclusivity** — 3D mesh-based fitting ensures accuracy across all body types
-- **Photorealism** — ControlNet-guided diffusion with perceptual + adversarial losses
-- **Occlusion Handling** — Robust DensePose-based layering for complex occlusions
-- **Multi-Scale Attention** — Spatial, self, and cross-attention at 4 resolution scales
+| Component | Parameters | Status |
+|-----------|-----------|--------|
+| **TryonNet** (SDXL UNet) | ~2.6B | **Frozen** |
+| **GarmentNet** (SDXL UNet) | ~2.6B | **Frozen** |
+| **VAE** (SDXL) | ~85M | **Frozen** |
+| **ControlNet3D** (novel) | ~350-400M | **Trainable** ✅ |
+
+Only ~6-7% of total parameters are trained — the 3D ControlNet conditioning module.
 
 ## Quick Start
 
@@ -75,16 +80,11 @@ python src/data/preprocessing/render_garment.py
 ### Training
 
 ```bash
-# Train on GPU
+# Train with IDM-VTON backbone (downloads from HuggingFace)
 python scripts/train.py --config configs/train.yaml
 
-# With 16GB VRAM settings
-python scripts/train.py \
-    --config configs/train.yaml \
-    --batch_size 2 \
-    --gradient_accumulation 8 \
-    --mixed_precision \
-    --gradient_checkpointing
+# Local dev mode (no download, placeholder models)
+python scripts/train.py --config configs/train.yaml --local
 ```
 
 For Colab training, see [`notebooks/DiffFit3D_Train.ipynb`](notebooks/DiffFit3D_Train.ipynb).
@@ -92,10 +92,24 @@ For Colab training, see [`notebooks/DiffFit3D_Train.ipynb`](notebooks/DiffFit3D_
 ### Inference
 
 ```bash
+# 3D garment mesh (novel — renders from any angle)
 python scripts/inference.py \
-    --config configs/inference.yaml \
     --person path/to/person.jpg \
     --garment path/to/garment.obj \
+    --output results/output.png \
+    --view_angle 0
+
+# Back view
+python scripts/inference.py \
+    --person path/to/person.jpg \
+    --garment path/to/garment.obj \
+    --output results/back_view.png \
+    --view_angle 180
+
+# Traditional 2D garment image
+python scripts/inference.py \
+    --person path/to/person.jpg \
+    --garment path/to/garment.jpg \
     --output results/output.png
 ```
 
@@ -107,12 +121,14 @@ DiffFit-3D/
 │   ├── data/              # Dataset & preprocessing configs
 │   └── model/             # UNet, attention, pipeline configs
 ├── src/
-│   ├── models/            # UNet branches, VAE, pipeline
-│   │   └── attention/     # Self, cross, spatial attention
+│   ├── models/            # IDM-VTON backbone + ControlNet3D
+│   │   ├── tryon_pipeline.py  # Main pipeline (IDM-VTON + ControlNet3D)
+│   │   ├── controlnet_3d.py   # 3D conditioning module (NOVEL)
+│   │   └── attention/         # Self, cross, spatial attention
 │   ├── modules/           # SMPL-X estimator, mesh renderer,
 │   │                      # garment draper, pose, segmentation
 │   ├── training/          # Training loop, losses, schedulers
-│   ├── inference/         # Image try-on inference
+│   ├── inference/         # Image try-on (2D + 3D modes)
 │   └── data/              # Dataset, transforms, preprocessing
 │       └── preprocessing/ # SMPL-X extraction, 3D rendering
 ├── scripts/               # CLI: train, inference, data setup
@@ -138,18 +154,18 @@ DiffFit-3D/
 
 ## Technical Details
 
-### 3D Pipeline
+### 3D Pipeline (Novel Contribution)
 
 1. **SMPL-X Body Estimation** → Predicts body shape (β), pose (θ), and expression from person photo
 2. **Garment Draping** → Coarse alignment + neural fine-tuning + collision handling
 3. **Differentiable Rendering** → PyTorch3D Phong renderer produces RGB + normal + depth maps
-4. **Conditioning** → Rendered outputs condition the Person UNet alongside pose, DensePose, and segmentation
+4. **ControlNet3D Conditioning** → 9-channel (RGB+normal+depth) → multi-scale residuals → TryonNet injection
 
-### Diffusion Architecture
+### IDM-VTON Backbone
 
-- **Person UNet**: ResBlock → Self-Attention → Cross-Attention → GEGLU FFN (×N blocks)
-- **Garment UNet**: Multi-scale feature extraction (1/1, 1/2, 1/4, 1/8) → Feature projector
-- **Fusion**: Cross-attention injects garment features into person branch
+- **TryonNet**: SDXL UNet (2.6B params, frozen) — main denoising backbone
+- **GarmentNet**: SDXL UNet (2.6B params, frozen) — garment feature extraction
+- **Cross-Attention Fusion**: Garment features injected via IP-Adapter + cross-attention
 - **Scheduler**: DDPM training / DDIM inference (50 steps)
 - **Guidance**: Classifier-free guidance (w=7.5)
 

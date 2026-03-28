@@ -51,10 +51,19 @@ class Trainer:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.pipeline.to(self.device)
 
-        # Optimizer
+        # Freeze backbone — only ControlNet3D is trainable
+        if hasattr(self.pipeline, "freeze_backbone"):
+            self.pipeline.freeze_backbone()
+
+        # Optimizer — only trainable params (ControlNet3D)
         opt_cfg = training_cfg.get("optimizer", {})
+        trainable_params = (
+            self.pipeline.get_trainable_params()
+            if hasattr(self.pipeline, "get_trainable_params")
+            else [p for p in pipeline.parameters() if p.requires_grad]
+        )
         self.optimizer = torch.optim.AdamW(
-            [p for p in pipeline.parameters() if p.requires_grad],
+            trainable_params,
             lr=opt_cfg.get("lr", 1e-5),
             weight_decay=opt_cfg.get("weight_decay", 0.01),
             betas=tuple(opt_cfg.get("betas", [0.9, 0.999])),
@@ -153,6 +162,7 @@ class Trainer:
                     agnostic_mask=batch["agnostic_image"],
                     pose_map=batch["pose_map"],
                     densepose_map=batch.get("densepose_map"),
+                    conditioning_3d=batch.get("conditioning_3d"),
                 )
                 loss = outputs["loss"] / self.grad_accum_steps
 
@@ -198,6 +208,7 @@ class Trainer:
                 agnostic_mask=batch["agnostic_image"],
                 pose_map=batch["pose_map"],
                 densepose_map=batch.get("densepose_map"),
+                conditioning_3d=batch.get("conditioning_3d"),
             )
             total_loss += outputs["loss"].item()
             num_batches += 1

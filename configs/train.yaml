@@ -1,26 +1,29 @@
 # ============================================================================
-# DiffFit-3D Training Configuration
+# DiffFit-3D Training Configuration — IDM-VTON Backbone
 # ============================================================================
 
 # --- General ---
 project_name: "difffit-3d"
-experiment_name: "baseline_v1"
+experiment_name: "idm_vton_3d_controlnet_v1"
 seed: 42
 output_dir: "outputs"
 log_dir: "logs"
 
 # --- Model ---
 model:
-  person_unet: "configs/model/person_unet.yaml"
-  garment_unet: "configs/model/garment_unet.yaml"
-  vae: "configs/model/vae.yaml"
-  pretrained_sd: "checkpoints/pretrained/stable_diffusion_v1.5"
-  pretrained_clip: "checkpoints/pretrained/clip_vit_large"
+  # IDM-VTON pre-trained backbone from HuggingFace
+  pretrained_idm_vton: "yisol/IDM-VTON"
+
+  # 3D ControlNet conditioning channels (RGB render + normal map + depth map)
+  controlnet_3d_channels: 9
+
+  # Freeze all IDM-VTON weights — only train ControlNet3D
+  freeze_backbone: true
 
 # --- Data ---
 data:
   config: "configs/data/dataset.yaml"
-  batch_size: 2
+  batch_size: 1       # SDXL is larger — batch_size=1 on T4
   num_workers: 2
   pin_memory: true
   persistent_workers: true
@@ -28,12 +31,12 @@ data:
 # --- Training ---
 training:
   epochs: 5
-  gradient_accumulation_steps: 8
-  mixed_precision: "fp16"  # fp16, bf16, or "no"
+  gradient_accumulation_steps: 16   # effective batch = 16
+  mixed_precision: "fp16"
   gradient_checkpointing: true
   max_grad_norm: 1.0
 
-  # Optimizer
+  # Optimizer (only ControlNet3D params)
   optimizer:
     type: "AdamW"
     lr: 1.0e-5
@@ -78,7 +81,7 @@ losses:
 
 # --- Noise Scheduler ---
 noise_scheduler:
-  type: "ddpm"
+  type: "ddim"             # DDIM for faster inference
   num_train_timesteps: 1000
   beta_start: 0.00085
   beta_end: 0.012
@@ -90,4 +93,4 @@ noise_scheduler:
 hardware:
   accelerator: "gpu"
   devices: 1
-  strategy: "auto"  # ddp, fsdp, deepspeed
+  strategy: "auto"
