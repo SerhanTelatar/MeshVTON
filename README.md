@@ -1,6 +1,6 @@
 # DiffFit-3D
 
-**Geometry-Aware Virtual Try-On: Synergizing 3D Garment Fitting with Controlled Diffusion Models**
+**Multi-View Virtual Try-On via 3D Garment Mesh Conditioning in Latent Diffusion Models**
 
 DiffFit-3D is a virtual try-on pipeline that combines 3D human body estimation (SMPL-X), differentiable garment rendering (PyTorch3D), and a pre-trained IDM-VTON backbone (SDXL-based Latent Diffusion) to achieve geometrically accurate, photorealistic garment fitting across diverse body shapes and camera perspectives.
 
