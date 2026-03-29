@@ -507,57 +507,79 @@ class TryOnPipeline(nn.Module):
     def _extract_garment_features(self, garment_latent, timesteps):
         """Extract garment features from frozen GarmentNet."""
         try:
-            # Diffusers UNet2DConditionModel
+            b = garment_latent.shape[0]
+            # SDXL UNet expects encoder_hidden_states with dim=2048
+            # and added_cond_kwargs with text_embeds + time_ids
+            dummy_encoder_hidden = torch.zeros(
+                b, 77, 2048,  # 77 tokens, 2048 dim (SDXL)
+                device=garment_latent.device,
+                dtype=garment_latent.dtype,
+            )
+            # SDXL also requires added_cond_kwargs
+            added_cond_kwargs = {
+                "text_embeds": torch.zeros(b, 1280, device=garment_latent.device, dtype=garment_latent.dtype),
+                "time_ids": torch.zeros(b, 6, device=garment_latent.device, dtype=garment_latent.dtype),
+            }
             out = self.garment_net(
                 garment_latent, timesteps,
-                encoder_hidden_states=torch.zeros(
-                    garment_latent.shape[0], 1, 768,
-                    device=garment_latent.device, dtype=garment_latent.dtype,
-                ),
+                encoder_hidden_states=dummy_encoder_hidden,
+                added_cond_kwargs=added_cond_kwargs,
             )
             if hasattr(out, "sample"):
                 return out.sample
             return out
         except Exception:
-            # Placeholder fallback
             b = garment_latent.shape[0]
-            return torch.zeros(b, 1, 768, device=garment_latent.device)
+            return torch.zeros(b, 77, 2048, device=garment_latent.device, dtype=garment_latent.dtype)
 
     def _predict_noise(self, model_input, timesteps, garment_features,
-                       controlnet_residuals=None):
+                    controlnet_residuals=None):
         """Run TryonNet with optional ControlNet3D residuals."""
         try:
-            # Diffusers UNet2DConditionModel
-            # Pad input to expected channels if needed
-            expected = self.tryon_net.config.in_channels
-            if model_input.shape[1] < expected:
-                pad = torch.zeros(
-                    model_input.shape[0], expected - model_input.shape[1],
-                    model_input.shape[2], model_input.shape[3],
-                    device=model_input.device, dtype=model_input.dtype,
-                )
-                model_input = torch.cat([model_input, pad], dim=1)
-            elif model_input.shape[1] > expected:
-                model_input = model_input[:, :expected]
-
-            # Prepare encoder hidden states
+            b = model_input.shape[0]
+            
+            # Ensure garment_features is (B, seq_len, 2048) for SDXL
             if garment_features.dim() == 2:
                 garment_features = garment_features.unsqueeze(1)
-            elif garment_features.dim() == 4:
-                b, c, h, w = garment_features.shape
-                garment_features = garment_features.reshape(b, c, h * w).permute(0, 2, 1)
+            if garment_features.shape[-1] != 2048:
+                # Project or pad to 2048
+                garment_features = torch.zeros(
+                    b, 77, 2048,
+                    device=model_input.device,
+                    dtype=model_input.dtype,
+                )
+            
+            # SDXL requires added_cond_kwargs
+            added_cond_kwargs = {
+                "text_embeds": torch.zeros(b, 1280, device=model_input.device, dtype=model_input.dtype),
+                "time_ids": torch.zeros(b, 6, device=model_input.device, dtype=model_input.dtype),
+            }
+
+            # Pad input channels if needed
+            expected = self.tryon_net.config.in_channels
+            if model_input.shape[1] != expected:
+                if model_input.shape[1] < expected:
+                    pad = torch.zeros(
+                        b, expected - model_input.shape[1],
+                        model_input.shape[2], model_input.shape[3],
+                        device=model_input.device, dtype=model_input.dtype,
+                    )
+                    model_input = torch.cat([model_input, pad], dim=1)
+                else:
+                    model_input = model_input[:, :expected]
 
             out = self.tryon_net(
                 model_input, timesteps,
                 encoder_hidden_states=garment_features,
+                added_cond_kwargs=added_cond_kwargs,
                 down_block_additional_residuals=controlnet_residuals[:-1] if controlnet_residuals else None,
                 mid_block_additional_residual=controlnet_residuals[-1] if controlnet_residuals else None,
             )
             return out.sample if hasattr(out, "sample") else out
 
-        except Exception:
-            # Placeholder fallback
-            return self.tryon_net(model_input, timesteps)
+        except Exception as e:
+            print(f"_predict_noise error: {e}")
+            raise
 
     def freeze_backbone(self):
         """Freeze all pre-trained components, keep ControlNet3D trainable."""
