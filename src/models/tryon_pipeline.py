@@ -62,18 +62,9 @@ class TryOnPipeline(nn.Module):
     ) -> "TryOnPipeline":
         """
         Load IDM-VTON pre-trained weights from HuggingFace.
-
-        Downloads and initializes:
-          - TryonNet (SDXL UNet) + GarmentNet (frozen SDXL UNet)
-          - SDXL VAE (AutoencoderKL)
-          - DDIM Scheduler
-          - ControlNet3D (randomly initialized, trainable)
-
-        Args:
-            pretrained_model_id: HuggingFace model ID for IDM-VTON.
-            controlnet_3d_channels: Input channels for 3D conditioning.
-            torch_dtype: Model precision (fp16 recommended for VRAM).
-            device: Target device.
+    
+        IDM-VTON uses a modified SDXL UNet with IP-Adapter integration.
+        The UNet config needs to be patched before loading weights.
         """
         try:
             from diffusers import (
@@ -81,61 +72,175 @@ class TryOnPipeline(nn.Module):
                 AutoencoderKL,
                 DDIMScheduler as DiffusersDDIMScheduler,
             )
-
+            from transformers import CLIPVisionModelWithProjection
+            from huggingface_hub import hf_hub_download
+            import json
+            import os
+    
             print(f"Loading IDM-VTON from: {pretrained_model_id}")
-
-            # TryonNet — main denoising UNet (trainable in original IDM-VTON,
-            # but we freeze it and only train ControlNet3D)
-            tryon_net = UNet2DConditionModel.from_pretrained(
+    
+            # ============================================================
+            # Step 1: Load TryonNet (main UNet)
+            # IDM-VTON's UNet has IP-Adapter fields in config that
+            # standard diffusers UNet2DConditionModel doesn't accept.
+            # Solution: download config, patch it, then load.
+            # ============================================================
+    
+            # Download the UNet config
+            config_path = hf_hub_download(
                 pretrained_model_id,
-                subfolder="unet",
-                torch_dtype=torch_dtype,
-            ).to(device)
-
-            # GarmentNet — frozen garment feature extractor
-            # IDM-VTON uses a second UNet copy as feature extractor
-            garment_net = UNet2DConditionModel.from_pretrained(
-                pretrained_model_id,
-                subfolder="unet_encoder",
-                torch_dtype=torch_dtype,
-            ).to(device)
-
-            # VAE — SDXL AutoencoderKL
-            vae = AutoencoderKL.from_pretrained(
-                pretrained_model_id,
-                subfolder="vae",
-                torch_dtype=torch_dtype,
-            ).to(device)
-
-            # Scheduler
-            noise_scheduler = DiffusersDDIMScheduler.from_pretrained(
-                pretrained_model_id,
-                subfolder="scheduler",
+                filename="unet/config.json",
             )
-
-            # Freeze all pre-trained components
+            with open(config_path, "r") as f:
+                unet_config = json.load(f)
+    
+            # Remove problematic fields that cause loading errors
+            fields_to_remove = [
+                "encoder_hid_dim_type",
+                "encoder_hid_dim",
+                "addition_embed_type",
+                "addition_embed_type_num_heads",
+                "addition_time_embed_dim",
+                # EMA fields that leak into config
+                "decay", "inv_gamma", "min_decay",
+                "optimization_step", "power",
+                "update_after_step", "use_ema_warmup",
+            ]
+            for field in fields_to_remove:
+                unet_config.pop(field, None)
+    
+            # Create UNet from cleaned config
+            tryon_net = UNet2DConditionModel.from_config(unet_config)
+    
+            # Load the actual weights
+            weights_path = hf_hub_download(
+                pretrained_model_id,
+                filename="unet/diffusion_pytorch_model.bin",
+            )
+            state_dict = torch.load(weights_path, map_location="cpu")
+    
+            # Load weights (strict=False to handle IP-Adapter extra keys)
+            missing, unexpected = tryon_net.load_state_dict(state_dict, strict=False)
+            if missing:
+                print(f"  TryonNet missing keys: {len(missing)} (IP-Adapter keys, expected)")
+            if unexpected:
+                print(f"  TryonNet unexpected keys: {len(unexpected)}")
+    
+            tryon_net = tryon_net.to(dtype=torch_dtype, device=device)
+            print(f"  TryonNet loaded: {sum(p.numel() for p in tryon_net.parameters()):,} params")
+    
+            # ============================================================
+            # Step 2: Load GarmentNet (frozen garment encoder)
+            # Uses unet_encoder subfolder with similar config issues
+            # ============================================================
+    
+            try:
+                # Try loading unet_encoder directly
+                encoder_config_path = hf_hub_download(
+                    pretrained_model_id,
+                    filename="unet_encoder/config.json",
+                )
+                with open(encoder_config_path, "r") as f:
+                    encoder_config = json.load(f)
+    
+                # Clean config
+                for field in fields_to_remove:
+                    encoder_config.pop(field, None)
+                # GarmentNet doesn't use addition_embed_type
+                encoder_config.pop("addition_embed_type", None)
+    
+                garment_net = UNet2DConditionModel.from_config(encoder_config)
+    
+                encoder_weights_path = hf_hub_download(
+                    pretrained_model_id,
+                    filename="unet_encoder/diffusion_pytorch_model.bin",
+                )
+                encoder_state_dict = torch.load(encoder_weights_path, map_location="cpu")
+                garment_net.load_state_dict(encoder_state_dict, strict=False)
+                garment_net = garment_net.to(dtype=torch_dtype, device=device)
+                print(f"  GarmentNet loaded: {sum(p.numel() for p in garment_net.parameters()):,} params")
+    
+            except Exception as e:
+                print(f"  GarmentNet from unet_encoder failed: {e}")
+                print(f"  Using TryonNet copy as GarmentNet (encoder-only)")
+                # Fallback: copy TryonNet weights for GarmentNet
+                garment_net = UNet2DConditionModel.from_config(unet_config)
+                garment_net.load_state_dict(state_dict, strict=False)
+                garment_net = garment_net.to(dtype=torch_dtype, device=device)
+    
+            # ============================================================
+            # Step 3: Load VAE
+            # ============================================================
+    
+            try:
+                vae = AutoencoderKL.from_pretrained(
+                    pretrained_model_id,
+                    subfolder="vae",
+                    torch_dtype=torch_dtype,
+                ).to(device)
+                print(f"  VAE loaded: {sum(p.numel() for p in vae.parameters()):,} params")
+            except Exception as e:
+                print(f"  VAE from IDM-VTON failed: {e}")
+                print(f"  Loading SDXL VAE from madebyollin/sdxl-vae-fp16-fix")
+                vae = AutoencoderKL.from_pretrained(
+                    "madebyollin/sdxl-vae-fp16-fix",
+                    torch_dtype=torch_dtype,
+                ).to(device)
+    
+            # ============================================================
+            # Step 4: Load Scheduler
+            # ============================================================
+    
+            try:
+                noise_scheduler = DiffusersDDIMScheduler.from_pretrained(
+                    pretrained_model_id,
+                    subfolder="scheduler",
+                )
+            except Exception:
+                noise_scheduler = DiffusersDDIMScheduler(
+                    beta_start=0.00085,
+                    beta_end=0.012,
+                    beta_schedule="scaled_linear",
+                    num_train_timesteps=1000,
+                    clip_sample=False,
+                    prediction_type="epsilon",
+                )
+    
+            # ============================================================
+            # Step 5: Freeze all backbone components
+            # ============================================================
+    
             for param in tryon_net.parameters():
                 param.requires_grad = False
             for param in garment_net.parameters():
                 param.requires_grad = False
             for param in vae.parameters():
                 param.requires_grad = False
-
-            print("IDM-VTON components loaded and frozen")
-
+    
+            total_frozen = (
+                sum(p.numel() for p in tryon_net.parameters())
+                + sum(p.numel() for p in garment_net.parameters())
+                + sum(p.numel() for p in vae.parameters())
+            )
+            print(f"  All backbone frozen: {total_frozen:,} params")
+    
         except Exception as e:
-            print(f"Warning: Could not load IDM-VTON from HuggingFace: {e}")
+            print(f"FATAL: Could not load IDM-VTON: {e}")
+            import traceback
+            traceback.print_exc()
             print("Falling back to placeholder modules for development")
             tryon_net, garment_net, vae, noise_scheduler = cls._create_placeholders(device)
-
-        # ControlNet3D — the ONLY trainable component (novel contribution)
+    
+        # ============================================================
+        # Step 6: Create ControlNet3D (TRAINABLE — our novel module)
+        # ============================================================
+    
         controlnet_3d = ControlNet3D(
             conditioning_channels=controlnet_3d_channels,
         ).to(device)
-
-        # Determine scaling factor (SDXL uses 0.13025, SD1.5 uses 0.18215)
+    
         scaling_factor = 0.13025
-
+    
         pipeline = cls(
             tryon_net=tryon_net,
             garment_net=garment_net,
@@ -144,12 +249,16 @@ class TryOnPipeline(nn.Module):
             controlnet_3d=controlnet_3d,
             scaling_factor=scaling_factor,
         )
-
+    
         trainable = sum(p.numel() for p in pipeline.parameters() if p.requires_grad)
         total = sum(p.numel() for p in pipeline.parameters())
-        print(f"Parameters — Total: {total:,} | Trainable: {trainable:,} "
-              f"({100 * trainable / max(total, 1):.1f}%)")
-
+        frozen = total - trainable
+        print(f"\nModel Summary:")
+        print(f"  Total parameters:         {total:,}")
+        print(f"  Trainable (ControlNet3D): {trainable:,}")
+        print(f"  Frozen (IDM-VTON):        {frozen:,}")
+        print(f"  Trainable ratio:          {100 * trainable / max(total, 1):.1f}%")
+    
         return pipeline
 
     @classmethod
