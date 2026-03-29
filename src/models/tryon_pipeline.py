@@ -1,11 +1,11 @@
 """
-TryOn Pipeline — IDM-VTON backed dual-branch diffusion pipeline.
+TryOn Pipeline — MeshVTON: IDM-VTON backbone + ControlNet3D.
 
-Loads the pre-trained IDM-VTON model (SDXL-based TryonNet + frozen GarmentNet)
-from HuggingFace and integrates the novel ControlNet3D module for 3D garment
-conditioning (rendered RGB, normal map, depth map from PyTorch3D).
+Uses IDM-VTON's ORIGINAL hacked UNet classes (unet_hacked_tryon,
+unet_hacked_garmnet) for proper weight loading and forward pass.
+The only trainable module is ControlNet3D.
 
-Architecture:
+Architecture (from architecture_diagram.png):
     3D garment mesh → SMPL-X drape → PyTorch3D render → ControlNet3D ──┐
     Person image → agnostic mask + pose + DensePose → VAE encode ───── TryonNet
     Garment image → frozen GarmentNet → IP-Adapter → cross-attention ──┘
@@ -21,18 +21,16 @@ from src.models.controlnet_3d import ControlNet3D
 
 class TryOnPipeline(nn.Module):
     """
-    IDM-VTON-backed Virtual Try-On Pipeline with 3D ControlNet.
-
-    Uses pre-trained IDM-VTON components (TryonNet, GarmentNet, VAE) as
-    frozen backbone components. The only trainable module is ControlNet3D,
-    which injects 3D conditioning from the garment rendering pipeline.
+    MeshVTON Pipeline: IDM-VTON backbone (frozen) + ControlNet3D (trainable).
 
     Components:
-        - tryon_net: SDXL UNet (TryonNet) — main denoising backbone
-        - garment_net: Frozen SDXL UNet — garment feature extractor
-        - vae: SDXL AutoencoderKL — encode/decode latent space
+        - tryon_net: IDM-VTON's hacked TryonNet UNet (frozen)
+        - garment_net: IDM-VTON's hacked GarmentNet UNet encoder (frozen)
+        - vae: SDXL AutoencoderKL (frozen)
+        - image_encoder: CLIP Vision encoder for IP-Adapter (frozen)
+        - image_proj_model: IP-Adapter Resampler (frozen)
         - noise_scheduler: DDPM/DDIM scheduler
-        - controlnet_3d: 3D ControlNet — NOVEL: 3D conditioning injection
+        - controlnet_3d: ControlNet3D — NOVEL (trainable)
     """
 
     def __init__(
@@ -42,6 +40,12 @@ class TryOnPipeline(nn.Module):
         vae: nn.Module,
         noise_scheduler,
         controlnet_3d: Optional[ControlNet3D] = None,
+        image_encoder: Optional[nn.Module] = None,
+        image_proj_model: Optional[nn.Module] = None,
+        text_encoder: Optional[nn.Module] = None,
+        text_encoder_2: Optional[nn.Module] = None,
+        tokenizer=None,
+        tokenizer_2=None,
         scaling_factor: float = 0.13025,
     ):
         super().__init__()
@@ -50,6 +54,12 @@ class TryOnPipeline(nn.Module):
         self.vae = vae
         self.noise_scheduler = noise_scheduler
         self.controlnet_3d = controlnet_3d or ControlNet3D()
+        self.image_encoder = image_encoder
+        self.image_proj_model = image_proj_model
+        self.text_encoder = text_encoder
+        self.text_encoder_2 = text_encoder_2
+        self.tokenizer = tokenizer
+        self.tokenizer_2 = tokenizer_2
         self.scaling_factor = scaling_factor
 
     @classmethod
@@ -61,195 +71,185 @@ class TryOnPipeline(nn.Module):
         device: str = "cuda",
     ) -> "TryOnPipeline":
         """
-        Load IDM-VTON pre-trained weights from HuggingFace.
-    
-        IDM-VTON uses a modified SDXL UNet with IP-Adapter integration.
-        The UNet config needs to be patched before loading weights.
+        Load IDM-VTON using its ORIGINAL hacked UNet classes.
         """
         try:
-            from diffusers import (
-                UNet2DConditionModel,
-                AutoencoderKL,
-                DDIMScheduler as DiffusersDDIMScheduler,
+            # IDM-VTON's own UNet classes
+            from src.idm_vton.unet_hacked_tryon import UNet2DConditionModel as TryonUNet
+            from src.idm_vton.unet_hacked_garmnet import UNet2DConditionModel as GarmentUNet
+
+            from diffusers import AutoencoderKL, DDIMScheduler
+            from transformers import (
+                CLIPVisionModelWithProjection,
+                CLIPTextModel,
+                CLIPTextModelWithProjection,
+                AutoTokenizer,
             )
-            from transformers import CLIPVisionModelWithProjection
             from huggingface_hub import hf_hub_download
             import json
-            import os
-    
+
             print(f"Loading IDM-VTON from: {pretrained_model_id}")
-    
+
             # ============================================================
-            # Step 1: Load TryonNet (main UNet)
-            # IDM-VTON's UNet has IP-Adapter fields in config that
-            # standard diffusers UNet2DConditionModel doesn't accept.
-            # Solution: download config, patch it, then load.
+            # 1. TryonNet — IDM-VTON's hacked UNet with IP-Adapter support
             # ============================================================
-    
-            # Download the UNet config
-            config_path = hf_hub_download(
+            print("  Loading TryonNet...")
+            tryon_net = TryonUNet.from_pretrained(
                 pretrained_model_id,
-                filename="unet/config.json",
-            )
-            with open(config_path, "r") as f:
-                unet_config = json.load(f)
-    
-            # Remove problematic fields that cause loading errors
-            fields_to_remove = [
-                "encoder_hid_dim_type",
-                "encoder_hid_dim",
-                "addition_embed_type",
-                "addition_embed_type_num_heads",
-                "addition_time_embed_dim",
-                # EMA fields that leak into config
-                "decay", "inv_gamma", "min_decay",
-                "optimization_step", "power",
-                "update_after_step", "use_ema_warmup",
-            ]
-            for field in fields_to_remove:
-                unet_config.pop(field, None)
-    
-            # Create UNet from cleaned config
-            tryon_net = UNet2DConditionModel.from_config(unet_config)
-    
-            # Load the actual weights
-            weights_path = hf_hub_download(
-                pretrained_model_id,
-                filename="unet/diffusion_pytorch_model.bin",
-            )
-            state_dict = torch.load(weights_path, map_location="cpu")
-    
-            # Load weights (strict=False to handle IP-Adapter extra keys)
-            missing, unexpected = tryon_net.load_state_dict(state_dict, strict=False)
-            if missing:
-                print(f"  TryonNet missing keys: {len(missing)} (IP-Adapter keys, expected)")
-            if unexpected:
-                print(f"  TryonNet unexpected keys: {len(unexpected)}")
-    
-            tryon_net = tryon_net.to(dtype=torch_dtype, device=device)
-            print(f"  TryonNet loaded: {sum(p.numel() for p in tryon_net.parameters()):,} params")
-    
+                subfolder="unet",
+                torch_dtype=torch_dtype,
+            ).to(device)
+            print(f"  ✅ TryonNet: {sum(p.numel() for p in tryon_net.parameters()):,} params")
+
             # ============================================================
-            # Step 2: Load GarmentNet (frozen garment encoder)
-            # Uses unet_encoder subfolder with similar config issues
+            # 2. GarmentNet — IDM-VTON's hacked garment encoder
             # ============================================================
-    
+            print("  Loading GarmentNet...")
+            # GarmentNet loads from SDXL base (not IDM-VTON's unet)
+            # and has addition_embed_type removed
             try:
-                # Try loading unet_encoder directly
-                encoder_config_path = hf_hub_download(
+                garment_net = GarmentUNet.from_pretrained(
                     pretrained_model_id,
-                    filename="unet_encoder/config.json",
-                )
-                with open(encoder_config_path, "r") as f:
-                    encoder_config = json.load(f)
-    
-                # Clean config
-                for field in fields_to_remove:
-                    encoder_config.pop(field, None)
-                # GarmentNet doesn't use addition_embed_type
-                encoder_config.pop("addition_embed_type", None)
-    
-                garment_net = UNet2DConditionModel.from_config(encoder_config)
-    
-                encoder_weights_path = hf_hub_download(
-                    pretrained_model_id,
-                    filename="unet_encoder/diffusion_pytorch_model.bin",
-                )
-                encoder_state_dict = torch.load(encoder_weights_path, map_location="cpu")
-                garment_net.load_state_dict(encoder_state_dict, strict=False)
-                garment_net = garment_net.to(dtype=torch_dtype, device=device)
-                print(f"  GarmentNet loaded: {sum(p.numel() for p in garment_net.parameters()):,} params")
-    
+                    subfolder="unet_encoder",
+                    torch_dtype=torch_dtype,
+                ).to(device)
             except Exception as e:
                 print(f"  GarmentNet from unet_encoder failed: {e}")
-                print(f"  Using TryonNet copy as GarmentNet (encoder-only)")
-                # Fallback: copy TryonNet weights for GarmentNet
-                garment_net = UNet2DConditionModel.from_config(unet_config)
-                garment_net.load_state_dict(state_dict, strict=False)
-                garment_net = garment_net.to(dtype=torch_dtype, device=device)
-    
+                print("  Trying alternative: load from SDXL base...")
+                # Fallback: load from SDXL base and remove addition_embed_type
+                garment_net = GarmentUNet.from_pretrained(
+                    "stabilityai/stable-diffusion-xl-base-1.0",
+                    subfolder="unet",
+                    torch_dtype=torch_dtype,
+                ).to(device)
+
+            garment_net.config.addition_embed_type = None
+            garment_net.config["addition_embed_type"] = None
+            print(f"  ✅ GarmentNet: {sum(p.numel() for p in garment_net.parameters()):,} params")
+
             # ============================================================
-            # Step 3: Load VAE
+            # 3. VAE
             # ============================================================
-    
+            print("  Loading VAE...")
             try:
                 vae = AutoencoderKL.from_pretrained(
                     pretrained_model_id,
                     subfolder="vae",
                     torch_dtype=torch_dtype,
                 ).to(device)
-                print(f"  VAE loaded: {sum(p.numel() for p in vae.parameters()):,} params")
-            except Exception as e:
-                print(f"  VAE from IDM-VTON failed: {e}")
-                print(f"  Loading SDXL VAE from madebyollin/sdxl-vae-fp16-fix")
+            except Exception:
                 vae = AutoencoderKL.from_pretrained(
                     "madebyollin/sdxl-vae-fp16-fix",
                     torch_dtype=torch_dtype,
                 ).to(device)
-    
+            print(f"  ✅ VAE: {sum(p.numel() for p in vae.parameters()):,} params")
+
             # ============================================================
-            # Step 4: Load Scheduler
+            # 4. Image Encoder (CLIP Vision) + IP-Adapter Resampler
             # ============================================================
-    
-            try:
-                noise_scheduler = DiffusersDDIMScheduler.from_pretrained(
-                    pretrained_model_id,
-                    subfolder="scheduler",
-                )
-            except Exception:
-                noise_scheduler = DiffusersDDIMScheduler(
-                    beta_start=0.00085,
-                    beta_end=0.012,
-                    beta_schedule="scaled_linear",
-                    num_train_timesteps=1000,
-                    clip_sample=False,
-                    prediction_type="epsilon",
-                )
-    
+            print("  Loading Image Encoder...")
+            image_encoder = CLIPVisionModelWithProjection.from_pretrained(
+                pretrained_model_id,
+                subfolder="image_encoder",
+                torch_dtype=torch_dtype,
+            ).to(device)
+            print(f"  ✅ Image Encoder: {sum(p.numel() for p in image_encoder.parameters()):,} params")
+
+            # IP-Adapter Resampler
+            from ip_adapter.ip_adapter import Resampler
+            image_proj_model = Resampler(
+                dim=1280,
+                depth=4,
+                dim_head=64,
+                heads=20,
+                num_queries=16,
+                embedding_dim=image_encoder.config.hidden_size,
+                output_dim=tryon_net.config.cross_attention_dim,
+                ff_mult=4,
+            ).to(device=device, dtype=torch_dtype)
+            print(f"  ✅ IP-Adapter Resampler: {sum(p.numel() for p in image_proj_model.parameters()):,} params")
+
             # ============================================================
-            # Step 5: Freeze all backbone components
+            # 5. Text Encoders + Tokenizers
             # ============================================================
-    
-            for param in tryon_net.parameters():
-                param.requires_grad = False
-            for param in garment_net.parameters():
-                param.requires_grad = False
-            for param in vae.parameters():
-                param.requires_grad = False
-    
-            total_frozen = (
-                sum(p.numel() for p in tryon_net.parameters())
-                + sum(p.numel() for p in garment_net.parameters())
-                + sum(p.numel() for p in vae.parameters())
+            print("  Loading Text Encoders...")
+            tokenizer = AutoTokenizer.from_pretrained(
+                pretrained_model_id, subfolder="tokenizer"
             )
-            print(f"  All backbone frozen: {total_frozen:,} params")
-    
+            tokenizer_2 = AutoTokenizer.from_pretrained(
+                pretrained_model_id, subfolder="tokenizer_2"
+            )
+            text_encoder = CLIPTextModel.from_pretrained(
+                pretrained_model_id,
+                subfolder="text_encoder",
+                torch_dtype=torch_dtype,
+            ).to(device)
+            text_encoder_2 = CLIPTextModelWithProjection.from_pretrained(
+                pretrained_model_id,
+                subfolder="text_encoder_2",
+                torch_dtype=torch_dtype,
+            ).to(device)
+            print(f"  ✅ Text Encoders loaded")
+
+            # ============================================================
+            # 6. Scheduler
+            # ============================================================
+            noise_scheduler = DDIMScheduler.from_pretrained(
+                pretrained_model_id, subfolder="scheduler"
+            )
+
+            # ============================================================
+            # 7. Freeze ALL backbone components
+            # ============================================================
+            for module in [tryon_net, garment_net, vae, image_encoder,
+                           image_proj_model, text_encoder, text_encoder_2]:
+                if module is not None:
+                    for param in module.parameters():
+                        param.requires_grad = False
+
+            total_frozen = sum(
+                sum(p.numel() for p in m.parameters())
+                for m in [tryon_net, garment_net, vae, image_encoder,
+                          image_proj_model, text_encoder, text_encoder_2]
+                if m is not None
+            )
+            print(f"  ✅ All backbone frozen: {total_frozen:,} params")
+
         except Exception as e:
             print(f"FATAL: Could not load IDM-VTON: {e}")
             import traceback
             traceback.print_exc()
-            print("Falling back to placeholder modules for development")
+            print("Falling back to placeholder modules")
             tryon_net, garment_net, vae, noise_scheduler = cls._create_placeholders(device)
-    
+            image_encoder = None
+            image_proj_model = None
+            text_encoder = None
+            text_encoder_2 = None
+            tokenizer = None
+            tokenizer_2 = None
+
         # ============================================================
-        # Step 6: Create ControlNet3D (TRAINABLE — our novel module)
+        # 8. ControlNet3D — the ONLY trainable component
         # ============================================================
-    
         controlnet_3d = ControlNet3D(
             conditioning_channels=controlnet_3d_channels,
         ).to(device)
-    
-        scaling_factor = 0.13025
-    
+
         pipeline = cls(
             tryon_net=tryon_net,
             garment_net=garment_net,
             vae=vae,
             noise_scheduler=noise_scheduler,
             controlnet_3d=controlnet_3d,
-            scaling_factor=scaling_factor,
+            image_encoder=image_encoder,
+            image_proj_model=image_proj_model,
+            text_encoder=text_encoder,
+            text_encoder_2=text_encoder_2,
+            tokenizer=tokenizer,
+            tokenizer_2=tokenizer_2,
+            scaling_factor=0.13025,
         )
-    
+
         trainable = sum(p.numel() for p in pipeline.parameters() if p.requires_grad)
         total = sum(p.numel() for p in pipeline.parameters())
         frozen = total - trainable
@@ -258,30 +258,22 @@ class TryOnPipeline(nn.Module):
         print(f"  Trainable (ControlNet3D): {trainable:,}")
         print(f"  Frozen (IDM-VTON):        {frozen:,}")
         print(f"  Trainable ratio:          {100 * trainable / max(total, 1):.1f}%")
-    
+
         return pipeline
 
     @classmethod
     def from_config(cls, config: dict) -> "TryOnPipeline":
-        """
-        Build pipeline from config dict.
-
-        Supports two modes:
-          1. If 'pretrained_idm_vton' key exists → load from HuggingFace
-          2. Otherwise → create placeholder modules for dev/testing
-        """
+        """Build pipeline from config dict."""
         pretrained_id = config.get("pretrained_idm_vton")
         if pretrained_id:
             return cls.from_pretrained(
                 pretrained_model_id=pretrained_id,
                 controlnet_3d_channels=config.get("controlnet_3d_channels", 9),
             )
-
-        # Fallback: create lightweight placeholder pipeline for testing
+        # Fallback for testing
         tryon_net, garment_net, vae, scheduler = cls._create_placeholders("cpu")
         controlnet_3d = ControlNet3D(
             conditioning_channels=config.get("controlnet_3d_channels", 9),
-            base_channels=config.get("model_channels", 320),
         )
         return cls(tryon_net, garment_net, vae, scheduler, controlnet_3d)
 
@@ -290,9 +282,7 @@ class TryOnPipeline(nn.Module):
         """Create lightweight placeholder modules for dev/testing."""
         from src.models.noise_scheduler import create_noise_scheduler
 
-        # Minimal placeholder UNets
-        # in_ch=8: noisy_latent(4) + agnostic_latent(4)
-        tryon_net = _PlaceholderUNet(in_ch=8, out_ch=4).to(device)
+        tryon_net = _PlaceholderUNet(in_ch=13, out_ch=4).to(device)
         garment_net = _PlaceholderUNet(in_ch=4, out_ch=4).to(device)
         for p in garment_net.parameters():
             p.requires_grad = False
@@ -304,6 +294,10 @@ class TryOnPipeline(nn.Module):
         scheduler = create_noise_scheduler("ddpm", num_train_timesteps=1000)
         return tryon_net, garment_net, vae, scheduler
 
+    # ================================================================
+    # FORWARD PASS — Training
+    # ================================================================
+
     def forward(
         self,
         person_image: torch.Tensor,
@@ -312,70 +306,100 @@ class TryOnPipeline(nn.Module):
         pose_map: torch.Tensor,
         densepose_map: Optional[torch.Tensor] = None,
         conditioning_3d: Optional[torch.Tensor] = None,
+        garment_text: Optional[str] = None,
     ) -> dict[str, torch.Tensor]:
         """
         Training forward pass.
 
         Args:
-            person_image: (B, 3, H, W) target person image.
-            garment_image: (B, 3, H, W) garment image.
-            agnostic_mask: (B, 3, H, W) clothing-agnostic person.
-            pose_map: (B, C, H, W) pose skeleton map.
-            densepose_map: (B, C, H, W) optional DensePose UV map.
+            person_image: (B, 3, H, W) target person image
+            garment_image: (B, 3, H, W) garment image
+            agnostic_mask: (B, 3, H, W) clothing-agnostic person
+            pose_map: (B, C, H, W) pose/densepose map
+            densepose_map: (B, C, H, W) optional DensePose UV map
             conditioning_3d: (B, 9, H, W) optional 3D conditioning
-                (RGB render + normal map + depth map).
-
-        Returns:
-            Dict with 'loss', 'pred_noise', 'target_noise'.
+            garment_text: optional garment description text
         """
-        with torch.no_grad():
-            person_latent = self._encode(person_image)
-            garment_latent = self._encode(garment_image)
-            agnostic_latent = self._encode(agnostic_mask)
+        device = person_image.device
+        dtype = person_image.dtype
+        b = person_image.shape[0]
 
-        # Sample noise and timesteps
+        # --- Encode images to latent space (frozen VAE) ---
+        with torch.no_grad():
+            person_latent = self._vae_encode(person_image)
+            garment_latent = self._vae_encode(garment_image)
+            agnostic_latent = self._vae_encode(agnostic_mask)
+
+            # Create inpainting mask in latent space
+            # IDM-VTON uses 13-channel input: noisy(4) + agnostic(4) + mask(1) + warped_cloth(4)
+            inpaint_mask = torch.ones(b, 1, person_latent.shape[2], person_latent.shape[3],
+                                      device=device, dtype=dtype)
+
+        # --- Sample noise and timesteps ---
         noise = torch.randn_like(person_latent)
-        b = person_latent.shape[0]
         timesteps = torch.randint(
             0, self._num_train_timesteps(),
-            (b,), device=person_latent.device, dtype=torch.long,
+            (b,), device=device, dtype=torch.long,
         )
+        noisy_latent = self.noise_scheduler.add_noise(person_latent, noise, timesteps)
 
-        # Add noise
-        noisy_latent = self._add_noise(person_latent, noise, timesteps)
-
-        # Get garment features (frozen)
+        # --- Get garment features (frozen) ---
         with torch.no_grad():
-            garment_features = self._extract_garment_features(
+            # CLIP image features for IP-Adapter
+            ip_features = self._get_ip_adapter_features(garment_image)
+
+            # GarmentNet encoder features for self-attention fusion
+            garment_down_features, garment_ref_features = self._get_garment_features(
                 garment_latent, timesteps
             )
 
-        # 3D ControlNet conditioning (TRAINABLE)
+            # Text embeddings
+            prompt_embeds, pooled_prompt_embeds = self._encode_text(garment_text, b)
+
+        # --- 3D ControlNet conditioning (TRAINABLE) ---
         controlnet_residuals = None
         if conditioning_3d is not None:
             controlnet_residuals = self.controlnet_3d(conditioning_3d, timesteps)
 
-        # Build model input
-        model_input = torch.cat([noisy_latent, agnostic_latent], dim=1)
+        # --- Build TryonNet input (13 channels) ---
+        # noisy_latent(4) + agnostic_latent(4) + mask(1) + garment_latent(4) = 13ch
+        model_input = torch.cat([
+            noisy_latent,       # 4ch - noised target
+            agnostic_latent,    # 4ch - clothing-agnostic person
+            inpaint_mask,       # 1ch - inpainting mask
+            garment_latent,     # 4ch - garment (warped cloth in original)
+        ], dim=1)  # (B, 13, H/8, W/8)
 
-        # Build conditioning
-        cond = [pose_map]
-        if densepose_map is not None:
-            cond.append(densepose_map)
+        # --- SDXL added conditions ---
+        add_time_ids = torch.zeros(b, 6, device=device, dtype=dtype)
+        added_cond_kwargs = {
+            "text_embeds": pooled_prompt_embeds,
+            "time_ids": add_time_ids,
+        }
 
-        # Predict noise via TryonNet
-        pred_noise = self._predict_noise(
-            model_input, timesteps, garment_features,
+        # --- Predict noise via TryonNet ---
+        pred_noise = self._tryon_forward(
+            model_input=model_input,
+            timesteps=timesteps,
+            encoder_hidden_states=prompt_embeds,
+            ip_features=ip_features,
+            garment_down_features=garment_down_features,
+            garment_ref_features=garment_ref_features,
+            added_cond_kwargs=added_cond_kwargs,
             controlnet_residuals=controlnet_residuals,
         )
 
-        # Ensure pred_noise matches noise shape
+        # Ensure shape match
         if pred_noise.shape != noise.shape:
             pred_noise = pred_noise[:, :noise.shape[1]]
 
         loss = F.mse_loss(pred_noise, noise)
 
         return {"loss": loss, "pred_noise": pred_noise, "target_noise": noise}
+
+    # ================================================================
+    # GENERATE — Inference
+    # ================================================================
 
     @torch.no_grad()
     def generate(
@@ -385,212 +409,269 @@ class TryOnPipeline(nn.Module):
         pose_map: torch.Tensor,
         densepose_map: Optional[torch.Tensor] = None,
         conditioning_3d: Optional[torch.Tensor] = None,
+        garment_text: Optional[str] = None,
         num_inference_steps: int = 50,
         guidance_scale: float = 7.5,
         generator: Optional[torch.Generator] = None,
     ) -> torch.Tensor:
-        """
-        Generate try-on image with 3D conditioning.
-
-        Args:
-            garment_image: (B, 3, H, W) garment image.
-            agnostic_mask: (B, 3, H, W) clothing-agnostic person.
-            pose_map: (B, C, H, W) pose map.
-            densepose_map: Optional DensePose map.
-            conditioning_3d: (B, 9, H, W) 3D conditioning from PyTorch3D.
-            num_inference_steps: DDIM denoising steps.
-            guidance_scale: Classifier-free guidance scale.
-            generator: Optional random generator for reproducibility.
-
-        Returns:
-            (B, 3, H, W) generated try-on image.
-        """
+        """Generate try-on image."""
         device = garment_image.device
+        dtype = garment_image.dtype
+        b = garment_image.shape[0]
 
-        garment_latent = self._encode(garment_image)
-        agnostic_latent = self._encode(agnostic_mask)
+        garment_latent = self._vae_encode(garment_image)
+        agnostic_latent = self._vae_encode(agnostic_mask)
 
-        # Set scheduler timesteps
-        if hasattr(self.noise_scheduler, "set_timesteps"):
-            self.noise_scheduler.set_timesteps(num_inference_steps)
-            timesteps = self.noise_scheduler.timesteps.to(device)
-        else:
-            timesteps = torch.arange(
-                self._num_train_timesteps() - 1, -1, -1, device=device
-            )
+        # Garment features
+        ip_features = self._get_ip_adapter_features(garment_image)
+        garment_down_features, garment_ref_features = self._get_garment_features(
+            garment_latent,
+            torch.zeros(b, device=device, dtype=torch.long)
+        )
+        prompt_embeds, pooled_prompt_embeds = self._encode_text(garment_text, b)
+
+        # Inpainting mask
+        h, w = agnostic_latent.shape[2], agnostic_latent.shape[3]
+        inpaint_mask = torch.ones(b, 1, h, w, device=device, dtype=dtype)
 
         # Start from noise
-        b, c, h, w = agnostic_latent.shape
-        latent = torch.randn(
-            b, 4, h, w, generator=generator,
-            device=device, dtype=garment_latent.dtype,
-        )
+        latent = torch.randn(b, 4, h, w, generator=generator, device=device, dtype=dtype)
 
-        for t in timesteps:
-            t_batch = t.expand(b) if t.dim() == 0 else t
+        # DDIM loop
+        self.noise_scheduler.set_timesteps(num_inference_steps)
+        for t in self.noise_scheduler.timesteps:
+            t_batch = t.expand(b).to(device)
 
-            # Garment features (frozen)
-            garment_features = self._extract_garment_features(
-                garment_latent, t_batch
-            )
-
-            # 3D ControlNet conditioning
+            # 3D ControlNet
             controlnet_residuals = None
             if conditioning_3d is not None:
-                controlnet_residuals = self.controlnet_3d(
-                    conditioning_3d, t_batch
-                )
+                controlnet_residuals = self.controlnet_3d(conditioning_3d, t_batch)
 
-            # Model input
-            model_input = torch.cat([latent, agnostic_latent], dim=1)
+            # 13-channel input
+            model_input = torch.cat([
+                latent, agnostic_latent, inpaint_mask, garment_latent
+            ], dim=1)
 
-            # Predict noise
-            noise_pred = self._predict_noise(
-                model_input, t_batch, garment_features,
+            add_time_ids = torch.zeros(b, 6, device=device, dtype=dtype)
+            added_cond_kwargs = {
+                "text_embeds": pooled_prompt_embeds,
+                "time_ids": add_time_ids,
+            }
+
+            noise_pred = self._tryon_forward(
+                model_input=model_input,
+                timesteps=t_batch,
+                encoder_hidden_states=prompt_embeds,
+                ip_features=ip_features,
+                garment_down_features=garment_down_features,
+                garment_ref_features=garment_ref_features,
+                added_cond_kwargs=added_cond_kwargs,
                 controlnet_residuals=controlnet_residuals,
             )
 
-            # Scheduler step
-            t_val = t.item() if t.dim() == 0 else t[0].item()
-            if hasattr(self.noise_scheduler, "step"):
-                step_output = self.noise_scheduler.step(
-                    noise_pred, t_val, latent, generator=generator
-                )
-                latent = step_output if isinstance(step_output, torch.Tensor) else step_output.prev_sample
+            step_out = self.noise_scheduler.step(noise_pred, t, latent)
+            latent = step_out.prev_sample
 
         # Decode
-        image = self._decode(latent)
+        image = self.vae.decode(latent / self.scaling_factor).sample
         image = (image / 2 + 0.5).clamp(0, 1)
         return image
 
-    # ---- Internal helpers ----
+    # ================================================================
+    # INTERNAL HELPERS
+    # ================================================================
 
-    def _encode(self, image: torch.Tensor) -> torch.Tensor:
+    def _vae_encode(self, image: torch.Tensor) -> torch.Tensor:
         """Encode image to latent via VAE."""
-        if hasattr(self.vae, "encode") and hasattr(self.vae.encode(image[:1]), "latent_dist"):
-            # Diffusers AutoencoderKL
+        if hasattr(self.vae, "encode") and hasattr(self.vae, "config"):
             dist = self.vae.encode(image).latent_dist
             return dist.sample() * self.scaling_factor
         elif hasattr(self.vae, "encode"):
-            # Custom / placeholder VAE
             enc = self.vae.encode(image)
             if isinstance(enc, dict):
                 return enc["latent"]
             return enc * self.scaling_factor
         return image
 
-    def _decode(self, latent: torch.Tensor) -> torch.Tensor:
-        """Decode latent to image via VAE."""
-        z = latent / self.scaling_factor
-        if hasattr(self.vae, "decode"):
-            dec = self.vae.decode(z)
-            if hasattr(dec, "sample"):
-                return dec.sample
-            return dec
-        return z
+    def _get_ip_adapter_features(self, garment_image: torch.Tensor) -> torch.Tensor:
+        """Get IP-Adapter features from CLIP vision encoder."""
+        if self.image_encoder is None or self.image_proj_model is None:
+            b = garment_image.shape[0]
+            # Return dummy features matching expected dim
+            cross_attn_dim = getattr(
+                getattr(self.tryon_net, 'config', None),
+                'cross_attention_dim', 2048
+            )
+            return torch.zeros(b, 16, cross_attn_dim,
+                             device=garment_image.device, dtype=garment_image.dtype)
 
-    def _num_train_timesteps(self) -> int:
-        """Get number of training timesteps from scheduler."""
-        if hasattr(self.noise_scheduler, "config"):
-            return self.noise_scheduler.config.num_train_timesteps
-        return getattr(self.noise_scheduler, "num_train_timesteps", 1000)
+        # CLIP vision encoding
+        clip_output = self.image_encoder(garment_image)
+        clip_features = clip_output.hidden_states[-2]  # penultimate layer
 
-    def _add_noise(self, original, noise, timesteps):
-        """Add noise using scheduler."""
-        if hasattr(self.noise_scheduler, "add_noise"):
-            return self.noise_scheduler.add_noise(original, noise, timesteps)
-        # Manual fallback
-        alpha = 0.9 ** (timesteps.float() / 1000)
-        alpha = alpha[:, None, None, None]
-        return alpha.sqrt() * original + (1 - alpha).sqrt() * noise
+        # Project through IP-Adapter Resampler
+        ip_tokens = self.image_proj_model(clip_features)
+        return ip_tokens
 
-    def _extract_garment_features(self, garment_latent, timesteps):
-        """Extract garment features from frozen GarmentNet."""
-        try:
+    def _get_garment_features(self, garment_latent, timesteps):
+        """
+        Get GarmentNet encoder features for self-attention fusion.
+
+        IDM-VTON's GarmentNet returns:
+          - down_features: list of intermediate encoder outputs
+          - reference_features: list of reference features for self-attention
+        """
+        if isinstance(self.garment_net, _PlaceholderUNet):
             b = garment_latent.shape[0]
-            # SDXL UNet expects encoder_hidden_states with dim=2048
-            # and added_cond_kwargs with text_embeds + time_ids
-            dummy_encoder_hidden = torch.zeros(
-                b, 77, 2048,  # 77 tokens, 2048 dim (SDXL)
-                device=garment_latent.device,
-                dtype=garment_latent.dtype,
+            device = garment_latent.device
+            dtype = garment_latent.dtype
+            # Return empty lists — no garment feature fusion
+            return [], []
+
+        b = garment_latent.shape[0]
+        device = garment_latent.device
+        dtype = garment_latent.dtype
+
+        # GarmentNet expects encoder_hidden_states
+        # Use zeros since it doesn't use text conditioning
+        dummy_text = torch.zeros(b, 77, 2048, device=device, dtype=dtype)
+
+        try:
+            down_features, reference_features = self.garment_net(
+                garment_latent,
+                timesteps,
+                dummy_text,
+                return_dict=False,
             )
-            # SDXL also requires added_cond_kwargs
-            added_cond_kwargs = {
-                "text_embeds": torch.zeros(b, 1280, device=garment_latent.device, dtype=garment_latent.dtype),
-                "time_ids": torch.zeros(b, 6, device=garment_latent.device, dtype=garment_latent.dtype),
+            return down_features, reference_features
+        except Exception as e:
+            print(f"GarmentNet forward failed: {e}")
+            return [], []
+
+    def _encode_text(self, text, batch_size):
+        """Encode text prompt for SDXL conditioning."""
+        device = next(self.tryon_net.parameters()).device
+        dtype = next(self.tryon_net.parameters()).dtype
+
+        if self.text_encoder is None or self.tokenizer is None:
+            # Return dummy embeddings
+            prompt_embeds = torch.zeros(batch_size, 77, 2048, device=device, dtype=dtype)
+            pooled_embeds = torch.zeros(batch_size, 1280, device=device, dtype=dtype)
+            return prompt_embeds, pooled_embeds
+
+        if text is None:
+            text = ""
+
+        # Tokenize
+        if isinstance(text, str):
+            text = [text] * batch_size
+
+        # CLIP text encoder 1
+        tokens_1 = self.tokenizer(
+            text, padding="max_length", max_length=77,
+            truncation=True, return_tensors="pt"
+        ).input_ids.to(device)
+        text_embeds_1 = self.text_encoder(tokens_1).last_hidden_state
+
+        # CLIP text encoder 2
+        tokens_2 = self.tokenizer_2(
+            text, padding="max_length", max_length=77,
+            truncation=True, return_tensors="pt"
+        ).input_ids.to(device)
+        text_output_2 = self.text_encoder_2(tokens_2)
+        text_embeds_2 = text_output_2.last_hidden_state
+        pooled_prompt_embeds = text_output_2.text_embeds
+
+        # Concatenate text encoder outputs (SDXL style)
+        prompt_embeds = torch.cat([text_embeds_1, text_embeds_2], dim=-1)
+
+        return prompt_embeds.to(dtype=dtype), pooled_prompt_embeds.to(dtype=dtype)
+
+    def _tryon_forward(
+        self,
+        model_input,
+        timesteps,
+        encoder_hidden_states,
+        ip_features,
+        garment_down_features,
+        garment_ref_features,
+        added_cond_kwargs,
+        controlnet_residuals=None,
+    ):
+        """
+        Run TryonNet forward pass.
+
+        IDM-VTON's hacked TryonNet accepts additional args:
+          - down_block_additional_residuals: ControlNet residuals
+          - mid_block_additional_residual: ControlNet mid block
+          - garment_features: from GarmentNet for self-attention fusion
+        """
+        try:
+            kwargs = {
+                "added_cond_kwargs": added_cond_kwargs,
             }
-            out = self.garment_net(
-                garment_latent, timesteps,
-                encoder_hidden_states=dummy_encoder_hidden,
-                added_cond_kwargs=added_cond_kwargs,
+
+            # ControlNet3D residuals
+            if controlnet_residuals is not None:
+                kwargs["down_block_additional_residuals"] = controlnet_residuals[:-1]
+                kwargs["mid_block_additional_residual"] = controlnet_residuals[-1]
+
+            # GarmentNet features for self-attention (IDM-VTON specific)
+            if garment_down_features:
+                kwargs["garment_features"] = garment_ref_features
+
+            out = self.tryon_net(
+                model_input,
+                timesteps,
+                encoder_hidden_states=encoder_hidden_states,
+                return_dict=False,
+                **kwargs,
             )
+
+            # IDM-VTON returns tuple
+            if isinstance(out, tuple):
+                return out[0]
             if hasattr(out, "sample"):
                 return out.sample
             return out
-        except Exception:
-            b = garment_latent.shape[0]
-            return torch.zeros(b, 77, 2048, device=garment_latent.device, dtype=garment_latent.dtype)
-
-    def _predict_noise(self, model_input, timesteps, garment_features,
-                    controlnet_residuals=None):
-        """Run TryonNet with optional ControlNet3D residuals."""
-        try:
-            b = model_input.shape[0]
-            
-            # Ensure garment_features is (B, seq_len, 2048) for SDXL
-            if garment_features.dim() == 2:
-                garment_features = garment_features.unsqueeze(1)
-            if garment_features.shape[-1] != 2048:
-                # Project or pad to 2048
-                garment_features = torch.zeros(
-                    b, 77, 2048,
-                    device=model_input.device,
-                    dtype=model_input.dtype,
-                )
-            
-            # SDXL requires added_cond_kwargs
-            added_cond_kwargs = {
-                "text_embeds": torch.zeros(b, 1280, device=model_input.device, dtype=model_input.dtype),
-                "time_ids": torch.zeros(b, 6, device=model_input.device, dtype=model_input.dtype),
-            }
-
-            # Pad input channels if needed
-            expected = self.tryon_net.config.in_channels
-            if model_input.shape[1] != expected:
-                if model_input.shape[1] < expected:
-                    pad = torch.zeros(
-                        b, expected - model_input.shape[1],
-                        model_input.shape[2], model_input.shape[3],
-                        device=model_input.device, dtype=model_input.dtype,
-                    )
-                    model_input = torch.cat([model_input, pad], dim=1)
-                else:
-                    model_input = model_input[:, :expected]
-
-            out = self.tryon_net(
-                model_input, timesteps,
-                encoder_hidden_states=garment_features,
-                added_cond_kwargs=added_cond_kwargs,
-                down_block_additional_residuals=controlnet_residuals[:-1] if controlnet_residuals else None,
-                mid_block_additional_residual=controlnet_residuals[-1] if controlnet_residuals else None,
-            )
-            return out.sample if hasattr(out, "sample") else out
 
         except Exception as e:
-            print(f"_predict_noise error: {e}")
-            raise
+            # Fallback: try without extra kwargs
+            print(f"TryonNet forward with full kwargs failed: {e}")
+            print("Trying minimal forward...")
+            try:
+                out = self.tryon_net(
+                    model_input,
+                    timesteps,
+                    encoder_hidden_states=encoder_hidden_states,
+                    added_cond_kwargs=added_cond_kwargs,
+                    return_dict=False,
+                )
+                if isinstance(out, tuple):
+                    return out[0]
+                return out
+            except Exception as e2:
+                print(f"Minimal forward also failed: {e2}")
+                raise
+
+    def _num_train_timesteps(self) -> int:
+        if hasattr(self.noise_scheduler, "config"):
+            return self.noise_scheduler.config.num_train_timesteps
+        return 1000
+
+    # ================================================================
+    # FREEZE / TRAINABLE PARAMS
+    # ================================================================
 
     def freeze_backbone(self):
-        """Freeze all pre-trained components, keep ControlNet3D trainable."""
-        for param in self.tryon_net.parameters():
-            param.requires_grad = False
-        for param in self.garment_net.parameters():
-            param.requires_grad = False
-        for param in self.vae.parameters():
-            param.requires_grad = False
-        for param in self.controlnet_3d.parameters():
-            param.requires_grad = True
+        """Freeze all pre-trained components, keep only ControlNet3D trainable."""
+        for name, module in self.named_children():
+            if name == "controlnet_3d":
+                for param in module.parameters():
+                    param.requires_grad = True
+            else:
+                for param in module.parameters():
+                    param.requires_grad = False
 
         trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
         total = sum(p.numel() for p in self.parameters())
@@ -598,28 +679,30 @@ class TryOnPipeline(nn.Module):
               f"({100 * trainable / max(total, 1):.1f}%)")
 
     def get_trainable_params(self):
-        """Return only trainable parameters (for optimizer)."""
+        """Return only ControlNet3D parameters for optimizer."""
         return [p for p in self.controlnet_3d.parameters() if p.requires_grad]
 
 
 # ---------------------------------------------------------------------------
-# Lightweight placeholder modules for dev / CPU testing
+# Placeholders for dev / CPU testing
 # ---------------------------------------------------------------------------
 
 class _PlaceholderUNet(nn.Module):
-    """Tiny UNet placeholder for testing without downloading SDXL."""
-
-    def __init__(self, in_ch: int = 8, out_ch: int = 4):
+    def __init__(self, in_ch: int = 13, out_ch: int = 4):
         super().__init__()
         self.in_ch = in_ch
+        self.config = type('Config', (), {
+            'in_channels': in_ch,
+            'cross_attention_dim': 2048,
+        })()
         self.net = nn.Sequential(
             nn.Conv2d(in_ch, 64, 3, padding=1),
             nn.SiLU(),
             nn.Conv2d(64, out_ch, 3, padding=1),
         )
 
-    def forward(self, x, timesteps=None, **kwargs):
-        # Handle channel mismatch gracefully
+    def forward(self, x, timesteps=None, encoder_hidden_states=None,
+                return_dict=False, **kwargs):
         if x.shape[1] != self.in_ch:
             if x.shape[1] > self.in_ch:
                 x = x[:, :self.in_ch]
@@ -630,20 +713,25 @@ class _PlaceholderUNet(nn.Module):
                     device=x.device, dtype=x.dtype,
                 )
                 x = torch.cat([x, pad], dim=1)
-        return self.net(x)
+        out = self.net(x)
+        if return_dict:
+            return type('Output', (), {'sample': out})()
+        return (out,)
 
 
 class _PlaceholderVAE(nn.Module):
-    """Tiny VAE placeholder for testing."""
-
     def __init__(self, scale: float = 0.13025):
         super().__init__()
         self.scale = scale
+        self.config = type('Config', (), {'scaling_factor': scale})()
         self.enc = nn.Conv2d(3, 4, 4, stride=4, padding=0)
         self.dec = nn.ConvTranspose2d(4, 3, 4, stride=4, padding=0)
 
     def encode(self, x):
-        return {"latent": self.enc(x) * self.scale}
+        latent = self.enc(x) * self.scale
+        return type('Output', (), {
+            'latent_dist': type('Dist', (), {'sample': lambda: latent})()
+        })()
 
     def decode(self, z):
-        return self.dec(z / self.scale)
+        return type('Output', (), {'sample': self.dec(z / self.scale)})()
