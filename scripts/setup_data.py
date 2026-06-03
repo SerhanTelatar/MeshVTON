@@ -1,5 +1,5 @@
-"""
-Data Setup Script — Reorganize downloaded datasets for DiffFit-3D pipeline.
+﻿"""
+Data Setup Script — Reorganize downloaded datasets for MeshVTON pipeline.
 
 Does the following:
 1. Moves VITON-HD person images and preprocessing outputs to pipeline structure
@@ -300,7 +300,7 @@ def create_pairs_csv(garment_index: dict):
 
 def main():
     print("=" * 60)
-    print("  DiffFit-3D Veri Organizasyonu")
+    print("  MeshVTON Veri Organizasyonu")
     print("=" * 60)
     print()
 

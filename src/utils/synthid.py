@@ -1,4 +1,4 @@
-"""
+﻿"""
 SynthID — Invisible watermark embedding/verification.
 
 Adds invisible watermarks to AI-generated try-on images for
@@ -17,7 +17,7 @@ class SynthIDWatermark:
     Uses DCT-domain embedding for robustness against common image transformations.
     """
 
-    def __init__(self, key: str = "difffit3d", strength: float = 0.1):
+    def __init__(self, key: str = "MeshVTON", strength: float = 0.1):
         self.key = key
         self.strength = strength
         self._seed = sum(ord(c) for c in key)
@@ -75,13 +75,13 @@ class SynthIDWatermark:
         return ''.join(chars)
 
 
-def add_watermark(image: Image.Image, key: str = "difffit3d") -> Image.Image:
+def add_watermark(image: Image.Image, key: str = "MeshVTON") -> Image.Image:
     """Convenience function to add watermark."""
     wm = SynthIDWatermark(key=key)
     return wm.embed(image)
 
 
-def verify_watermark(image: Image.Image, key: str = "difffit3d") -> dict:
+def verify_watermark(image: Image.Image, key: str = "MeshVTON") -> dict:
     """Convenience function to verify watermark."""
     wm = SynthIDWatermark(key=key)
     return wm.verify(image)

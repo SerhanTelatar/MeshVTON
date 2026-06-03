@@ -1,4 +1,4 @@
-"""DiffFit-3D Video Package."""
+﻿"""MeshVTON Video Package."""
 from src.video.temporal_attention import TemporalAttention
 from src.video.motion_module import MotionModule
 from src.video.frame_interpolation import FrameInterpolator

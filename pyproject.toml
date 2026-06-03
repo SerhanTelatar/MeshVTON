@@ -1,16 +1,16 @@
-[build-system]
+﻿[build-system]
 requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "difffit-3d"
+name = "MeshVTON"
 version = "0.1.0"
 description = "Geometry-Aware Virtual Try-On: Synergizing 3D Garment Fitting with Controlled Diffusion Models"
 readme = "README.md"
 license = {text = "Apache-2.0"}
 requires-python = ">=3.9"
 authors = [
-    {name = "DiffFit-3D Team"},
+    {name = "MeshVTON Team"},
 ]
 keywords = ["virtual-try-on", "diffusion", "3d", "garment-fitting", "computer-vision"]
 classifiers = [
@@ -69,8 +69,8 @@ threed = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/DiffFit-3D/DiffFit-3D"
-Repository = "https://github.com/DiffFit-3D/DiffFit-3D"
+Homepage = "https://github.com/MeshVTON/MeshVTON"
+Repository = "https://github.com/MeshVTON/MeshVTON"
 
 [tool.setuptools.packages.find]
 where = ["."]

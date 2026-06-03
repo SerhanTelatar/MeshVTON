@@ -1,4 +1,4 @@
-# DiffFit-3D: Colab'da Eğitim — Adım Adım Rehber
+﻿# MeshVTON: Colab'da Eğitim — Adım Adım Rehber
 
 ## 📋 Genel Plan
 
@@ -20,7 +20,7 @@
 Terminalini aç ve şunu çalıştır:
 
 ```bash
-cd C:\Users\telat\Documents\GitHub\DiffFit-3D
+cd C:\Users\telat\Documents\GitHub\MeshVTON
 
 # .gitignore'u güncelle (büyük dosyaları git'e ekleme)
 # data/ ve checkpoints/ zaten .gitignore'da olmalı
@@ -40,7 +40,7 @@ Bu en uzun adım. Büyük dosyaları zip'le ve Drive'a yükle:
 
 ### Lokalde ZIP'le (PowerShell)
 ```powershell
-cd C:\Users\telat\Documents\GitHub\DiffFit-3D
+cd C:\Users\telat\Documents\GitHub\MeshVTON
 
 # Kişi görüntüleri (en büyük, ~4 GB)
 Compress-Archive -Path "data\raw\images\*.jpg" -DestinationPath "drive_upload\images.zip"
@@ -63,13 +63,13 @@ Compress-Archive -Path "checkpoints\pretrained" -DestinationPath "drive_upload\p
 
 ### Google Drive'a Yükle
 1. [drive.google.com](https://drive.google.com) aç
-2. `DiffFit-3D` adında klasör oluştur
+2. `MeshVTON` adında klasör oluştur
 3. `drive_upload/` klasöründeki tüm zip'leri buraya sürükle-bırak
 
 ### Drive Yapısı:
 ```
 Google Drive/
-└── DiffFit-3D/
+└── MeshVTON/
     ├── images.zip          (~4 GB)
     ├── poses.zip           (~500 MB)
     ├── segments.zip        (~200 MB)
@@ -87,7 +87,7 @@ Google Drive/
 ## Adım 3: Colab Notebook'u Aç
 
 1. [colab.research.google.com](https://colab.research.google.com) aç
-2. Projedeki `notebooks/DiffFit3D_Train.ipynb` dosyasını yükle
+2. Projedeki `notebooks/MeshVTON_Train.ipynb` dosyasını yükle
    — VEYA —
    GitHub'dan aç: File → Open Notebook → GitHub → repo URL'ni yapıştır
 3. Runtime → Change runtime type → **GPU** (T4/A100) seç

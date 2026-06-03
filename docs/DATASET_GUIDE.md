@@ -1,8 +1,8 @@
-# DiffFit-3D: Dataset Hazırlama Rehberi
+﻿# MeshVTON: Dataset Hazırlama Rehberi
 
 ## 📥 1. İndirilecek Veriler
 
-DiffFit-3D tam 3D pipeline'ı için **3 tip veri** gereklidir:
+MeshVTON tam 3D pipeline'ı için **3 tip veri** gereklidir:
 
 ---
 
@@ -51,7 +51,7 @@ Herhangi bir virtual try-on datasetinden kişi görüntüleri:
 İndirdiğin dosyaları aşağıdaki yapıya göre yerleştir:
 
 ```
-DiffFit-3D/
+MeshVTON/
 ├── checkpoints/
 │   └── pretrained/
 │       └── smplx/                          ← SMPL-X MODEL DOSYALARI

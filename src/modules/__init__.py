@@ -1,4 +1,4 @@
-"""DiffFit-3D Modules Package."""
+﻿"""MeshVTON Modules Package."""
 
 from src.modules.garment_encoder import GarmentEncoder
 from src.modules.pose_estimator import PoseEstimator

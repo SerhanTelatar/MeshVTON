@@ -1,5 +1,5 @@
-"""
-Training Loop for DiffFit-3D.
+﻿"""
+Training Loop for MeshVTON.
 
 Main trainer with mixed precision, gradient accumulation, EMA,
 checkpoint management, and wandb logging.
@@ -254,7 +254,7 @@ class Trainer:
         try:
             import wandb
             self.wandb_run = wandb.init(
-                project=self.config.get("training", {}).get("logging", {}).get("wandb_project", "difffit-3d"),
+                project=self.config.get("training", {}).get("logging", {}).get("wandb_project", "MeshVTON"),
                 config=self.config,
             )
         except ImportError:

@@ -1,4 +1,4 @@
-"""DiffFit-3D Inference Package."""
+﻿"""MeshVTON Inference Package."""
 from src.inference.image_tryon import ImageTryOn
 from src.inference.video_tryon import VideoTryOn
 from src.inference.postprocess import PostProcessor

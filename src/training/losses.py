@@ -1,5 +1,5 @@
-"""
-Loss Functions for DiffFit-3D Training.
+﻿"""
+Loss Functions for MeshVTON Training.
 
 Composite loss: L1, perceptual (VGG), LPIPS, adversarial, and KL divergence.
 """

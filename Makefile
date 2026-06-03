@@ -1,7 +1,7 @@
-.PHONY: install train infer preprocess evaluate test lint format serve clean
+﻿.PHONY: install train infer preprocess evaluate test lint format serve clean
 
 # ============================================================================
-# DiffFit-3D Makefile
+# MeshVTON Makefile
 # ============================================================================
 
 PYTHON ?= python
@@ -59,7 +59,7 @@ serve:
 	cd serving && uvicorn api.app:app --host 0.0.0.0 --port 8000 --reload
 
 serve-docker:
-	cd serving && docker build -t difffit3d-server . && docker run -p 8000:8000 --gpus all difffit3d-server
+	cd serving && docker build -t MeshVTON-server . && docker run -p 8000:8000 --gpus all MeshVTON-server
 
 # --- Cleanup ---
 clean:

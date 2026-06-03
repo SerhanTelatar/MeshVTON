@@ -1,4 +1,4 @@
-"""Inference entry point: python scripts/inference.py --person img.jpg --garment garment.obj"""
+﻿"""Inference entry point: python scripts/inference.py --person img.jpg --garment garment.obj"""
 
 import argparse
 from pathlib import Path
@@ -11,7 +11,7 @@ from src.inference.video_tryon import VideoTryOn
 
 
 def main():
-    parser = argparse.ArgumentParser(description="DiffFit-3D Inference")
+    parser = argparse.ArgumentParser(description="MeshVTON Inference")
     parser.add_argument("--config", default="configs/inference.yaml")
     parser.add_argument("--person", required=True, help="Person image path")
     parser.add_argument("--garment", required=True,

@@ -1,9 +1,9 @@
-# ============================================================================
-# DiffFit-3D Training Configuration — IDM-VTON Backbone
+﻿# ============================================================================
+# MeshVTON Training Configuration — IDM-VTON Backbone
 # ============================================================================
 
 # --- General ---
-project_name: "difffit-3d"
+project_name: "MeshVTON"
 experiment_name: "idm_vton_3d_controlnet_v1"
 seed: 42
 output_dir: "outputs"
@@ -69,7 +69,7 @@ training:
     log_every_n_steps: 50
     sample_every_n_steps: 500
     use_wandb: false
-    wandb_project: "difffit-3d"
+    wandb_project: "MeshVTON"
 
 # --- Loss Weights ---
 losses:

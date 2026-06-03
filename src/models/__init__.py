@@ -1,4 +1,4 @@
-"""DiffFit-3D Models Package."""
+﻿"""MeshVTON Models Package."""
 
 from src.models.tryon_pipeline import TryOnPipeline
 from src.models.controlnet_3d import ControlNet3D

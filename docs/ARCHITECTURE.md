@@ -1,14 +1,14 @@
-# DiffFit-3D: Mimari Açıklama (Architecture Deep Dive)
+﻿# MeshVTON: Mimari Açıklama (Architecture Deep Dive)
 
 ## Görsel Mimari Diyagramı
 
-![DiffFit-3D Architecture Diagram](architecture_diagram.png)
+![MeshVTON Architecture Diagram](architecture_diagram.png)
 
 ---
 
 ## 1. Genel Bakış (Overview)
 
-DiffFit-3D, **IDM-VTON** (SDXL tabanlı) pre-trained backbone üzerine inşa edilmiş, **3D geometri farkındalığına** sahip bir sanal giysi deneme (virtual try-on) pipeline'ıdır. Mevcut 2D yöntemlerden farklı olarak, **gerçek 3D giysi mesh'lerini** kullanarak her açıdan (ön, yan, arka) geometrik olarak doğru sonuçlar üretir.
+MeshVTON, **IDM-VTON** (SDXL tabanlı) pre-trained backbone üzerine inşa edilmiş, **3D geometri farkındalığına** sahip bir sanal giysi deneme (virtual try-on) pipeline'ıdır. Mevcut 2D yöntemlerden farklı olarak, **gerçek 3D giysi mesh'lerini** kullanarak her açıdan (ön, yan, arka) geometrik olarak doğru sonuçlar üretir.
 
 ### Temel Felsefe
 
@@ -17,7 +17,7 @@ Mevcut 2D sanal giysi deneme yöntemleri şu sorunlarla karşı karşıyadır:
 - **Perspektif tutarsızlıkları**: Yan/arka görünümlerde "sticker-like" yapışık görünüm
 - **Vücut tipi çeşitliliği**: 2D warping farklı vücut tiplerine adapte olamaz
 
-DiffFit-3D bu sorunları şu şekilde çözer:
+MeshVTON bu sorunları şu şekilde çözer:
 
 1. **3D Giysi Mesh'leri**: `.obj` formatında 360° geometri ve doku bilgisi içeren gerçek 3D garment kullanımı
 2. **SMPL-X Beden Tahmini**: Kişi fotoğrafından 3D beden parametreleri (β, θ) çıkarımı
@@ -30,7 +30,7 @@ DiffFit-3D bu sorunları şu şekilde çözer:
 ```
 Geleneksel 2D Try-On:   2D Garment Photo  →  Warp  →  Paste  →  Sonuç (sadece ön yüz)
 
-DiffFit-3D:              3D Garment Mesh   →  SMPL-X Drape  →  PyTorch3D Render
+MeshVTON:              3D Garment Mesh   →  SMPL-X Drape  →  PyTorch3D Render
                               ↓                                        ↓
                          GarmentNet (frozen)              ControlNet3D (eğitilir)
                               ↓                                        ↓
@@ -58,7 +58,7 @@ DiffFit-3D:              3D Garment Mesh   →  SMPL-X Drape  →  PyTorch3D Ren
 
 ## 3. 3D Pipeline — Novel Contribution
 
-Bu bölüm DiffFit-3D'nin **özgün katkısıdır** ve mevcut hiçbir 2D try-on yönteminde bulunmaz.
+Bu bölüm MeshVTON'nin **özgün katkısıdır** ve mevcut hiçbir 2D try-on yönteminde bulunmaz.
 
 ### 3.1 SMPL-X Beden Tahmini
 
@@ -592,7 +592,7 @@ graph LR
 
 ## 13. 2D Try-On Yöntemleri ile Karşılaştırma
 
-| Özellik | 2D Yöntemler (IDM-VTON vanilla) | DiffFit-3D |
+| Özellik | 2D Yöntemler (IDM-VTON vanilla) | MeshVTON |
 |---------|--------------------------------|------------|
 | **Giysi girişi** | 2D fotoğraf (sadece ön yüz) | 3D mesh (360° geometri) |
 | **Arka görünüm** | ❌ Ön yüzü yapıştırır / hallucinate | ✅ Mesh'in arkası render edilir |
@@ -605,4 +605,4 @@ graph LR
 
 ---
 
-> **Sonuç**: DiffFit-3D, IDM-VTON'un önceden eğitilmiş SDXL backbone'unu (TryonNet + GarmentNet + VAE) **frozen** olarak kullanır ve üzerine **ControlNet3D** modülünü ekler. Bu modül, 3D giysi mesh'lerinden PyTorch3D ile render edilen RGB, normal map ve depth map bilgilerini çok ölçekli residual bağlantılarla TryonNet'e enjekte eder. Böylece, 2D yöntemlerin en büyük limitasyonu olan "ön yüz problemi" çözülür ve kullanıcı herhangi bir açıdan geometrik olarak doğru, fotorealistik try-on sonuçları elde eder.
+> **Sonuç**: MeshVTON, IDM-VTON'un önceden eğitilmiş SDXL backbone'unu (TryonNet + GarmentNet + VAE) **frozen** olarak kullanır ve üzerine **ControlNet3D** modülünü ekler. Bu modül, 3D giysi mesh'lerinden PyTorch3D ile render edilen RGB, normal map ve depth map bilgilerini çok ölçekli residual bağlantılarla TryonNet'e enjekte eder. Böylece, 2D yöntemlerin en büyük limitasyonu olan "ön yüz problemi" çözülür ve kullanıcı herhangi bir açıdan geometrik olarak doğru, fotorealistik try-on sonuçları elde eder.

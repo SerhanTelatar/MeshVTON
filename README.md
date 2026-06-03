@@ -1,12 +1,12 @@
-# DiffFit-3D
+﻿# MeshVTON
 
 **Multi-View Virtual Try-On via 3D Garment Mesh Conditioning in Latent Diffusion Models**
 
-DiffFit-3D is a virtual try-on pipeline that combines 3D human body estimation (SMPL-X), differentiable garment rendering (PyTorch3D), and a pre-trained IDM-VTON backbone (SDXL-based Latent Diffusion) to achieve geometrically accurate, photorealistic garment fitting across diverse body shapes and camera perspectives.
+MeshVTON is a virtual try-on pipeline that combines 3D human body estimation (SMPL-X), differentiable garment rendering (PyTorch3D), and a pre-trained IDM-VTON backbone (SDXL-based Latent Diffusion) to achieve geometrically accurate, photorealistic garment fitting across diverse body shapes and camera perspectives.
 
 ## Architecture
 
-![DiffFit-3D Architecture](docs/architecture_diagram.png)
+![MeshVTON Architecture](docs/architecture_diagram.png)
 
 ### Pipeline Overview
 
@@ -23,7 +23,7 @@ DiffFit-3D is a virtual try-on pipeline that combines 3D human body estimation (
 
 ### What Makes It Different
 
-Unlike 2D-only virtual try-on methods, DiffFit-3D uses **real 3D garment meshes** instead of 2D garment photos. This means:
+Unlike 2D-only virtual try-on methods, MeshVTON uses **real 3D garment meshes** instead of 2D garment photos. This means:
 
 - 🔄 **Back & side views** — The model renders the garment from any angle, no hallucination needed
 - 📐 **Geometric accuracy** — 3D mesh ensures correct proportions across all body types
@@ -48,8 +48,8 @@ Only ~6-7% of total parameters are trained — the 3D ControlNet conditioning mo
 
 ```bash
 # Clone
-git clone https://github.com/SerhanTelatar/DiffFit-3D.git
-cd DiffFit-3D
+git clone https://github.com/SerhanTelatar/MeshVTON.git
+cd MeshVTON
 
 # Core dependencies
 pip install -r requirements.txt
@@ -87,7 +87,7 @@ python scripts/train.py --config configs/train.yaml
 python scripts/train.py --config configs/train.yaml --local
 ```
 
-For Colab training, see [`notebooks/DiffFit3D_Train.ipynb`](notebooks/DiffFit3D_Train.ipynb).
+For Colab training, see [`notebooks/MeshVTON_Train.ipynb`](notebooks/MeshVTON_Train.ipynb).
 
 ### Inference
 
@@ -116,7 +116,7 @@ python scripts/inference.py \
 ## Project Structure
 
 ```
-DiffFit-3D/
+MeshVTON/
 ├── configs/
 │   ├── data/              # Dataset & preprocessing configs
 │   └── model/             # UNet, attention, pipeline configs
@@ -172,11 +172,11 @@ DiffFit-3D/
 ## Citation
 
 ```bibtex
-@software{difffit3d2025,
-    title={DiffFit-3D: Geometry-Aware Virtual Try-On},
+@software{MeshVTON2025,
+    title={MeshVTON: Geometry-Aware Virtual Try-On},
     author={Serhan Telatar},
     year={2025},
-    url={https://github.com/SerhanTelatar/DiffFit-3D}
+    url={https://github.com/SerhanTelatar/MeshVTON}
 }
 ```
 

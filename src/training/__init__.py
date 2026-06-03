@@ -1,4 +1,4 @@
-"""DiffFit-3D Training Package."""
+﻿"""MeshVTON Training Package."""
 
 from src.training.trainer import Trainer
 from src.training.losses import TryOnLoss

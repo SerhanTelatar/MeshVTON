@@ -1,4 +1,4 @@
-"""Training entry point: python scripts/train.py --config configs/train.yaml"""
+﻿"""Training entry point: python scripts/train.py --config configs/train.yaml"""
 
 import argparse
 from pathlib import Path
@@ -13,7 +13,7 @@ from src.training.trainer import Trainer
 
 
 def main():
-    parser = argparse.ArgumentParser(description="DiffFit-3D Training")
+    parser = argparse.ArgumentParser(description="MeshVTON Training")
     parser.add_argument("--config", type=str, default="configs/train.yaml")
     parser.add_argument("--resume", type=str, default=None, help="Resume from checkpoint")
     parser.add_argument("--seed", type=int, default=None)

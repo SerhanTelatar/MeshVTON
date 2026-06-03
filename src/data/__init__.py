@@ -1,4 +1,4 @@
-"""DiffFit-3D Data Package."""
+﻿"""MeshVTON Data Package."""
 from src.data.dataset import TryOnDataset
 from src.data.transforms import TryOnTransforms
 from src.data.pair_sampler import PairSampler

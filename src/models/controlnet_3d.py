@@ -1,11 +1,11 @@
-"""
-ControlNet3D — 3D Conditioning Module for DiffFit-3D.
+﻿"""
+ControlNet3D — 3D Conditioning Module for MeshVTON.
 
 Processes 3D rendering outputs (RGB render, normal map, depth map) from the
 PyTorch3D pipeline and produces multi-scale conditioning features that are
 injected into the TryonNet (Person UNet) via residual connections.
 
-This is the NOVEL CONTRIBUTION of DiffFit-3D: unlike 2D-only try-on methods,
+This is the NOVEL CONTRIBUTION of MeshVTON: unlike 2D-only try-on methods,
 this module provides the diffusion model with explicit 3D geometric cues
 rendered from actual garment meshes draped onto the estimated body.
 """
@@ -90,7 +90,7 @@ class ControlNet3DResBlock(nn.Module):
 
 class ControlNet3D(nn.Module):
     """
-    3D ControlNet for DiffFit-3D.
+    3D ControlNet for MeshVTON.
 
     Takes 3D rendering outputs (RGB render + normal map + depth map from
     PyTorch3D) and produces multi-scale conditioning features that are
