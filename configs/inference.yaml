@@ -2,16 +2,16 @@
 # MeshVTON Inference Configuration
 # ============================================================================
 
-# --- Model Paths ---
+# --- Model ---
 model:
-  person_unet_path: "checkpoints/person_unet/best.safetensors"
-  garment_unet_path: "checkpoints/garment_unet/best.safetensors"
-  vae_path: "checkpoints/vae/best.safetensors"
-  person_unet_config: "configs/model/person_unet.yaml"
-  garment_unet_config: "configs/model/garment_unet.yaml"
-  vae_config: "configs/model/vae.yaml"
-  pretrained_sd: "checkpoints/pretrained/stable_diffusion_v1.5"
-  use_ema: true
+  # IDM-VTON pre-trained backbone (TryonNet + GarmentNet + VAE + CLIP encoders)
+  pretrained_idm_vton: "yisol/IDM-VTON"
+
+  # 3D ControlNet conditioning channels (RGB render + normal map + depth map)
+  controlnet_3d_channels: 9
+
+  # Optional: fine-tuned ControlNet3D weights
+  controlnet_3d_checkpoint: null
 
 # --- Diffusion Sampling ---
 sampling:

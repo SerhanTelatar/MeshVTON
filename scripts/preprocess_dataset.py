@@ -5,14 +5,13 @@ from omegaconf import OmegaConf
 
 from src.data.preprocessing.extract_pose import extract_poses
 from src.data.preprocessing.extract_segment import extract_segments
-from src.data.preprocessing.extract_densepose import extract_densepose
 from src.data.preprocessing.build_agnostic import build_agnostic
 
 
 def main():
     parser = argparse.ArgumentParser(description="Preprocess dataset")
     parser.add_argument("--config", default="configs/data/preprocessing.yaml")
-    parser.add_argument("--steps", nargs="+", default=["pose", "segment", "densepose", "agnostic"])
+    parser.add_argument("--steps", nargs="+", default=["pose", "segment", "agnostic"])
     args = parser.parse_args()
 
     config = OmegaConf.to_container(OmegaConf.load(args.config), resolve=True)
@@ -28,10 +27,6 @@ def main():
         print("=== Extracting segmentation ===")
         extract_segments(image_dir, config["segmentation"]["output_dir"],
                          config["segmentation"].get("model", "atr"), device)
-
-    if "densepose" in args.steps and config.get("densepose", {}).get("enabled", True):
-        print("=== Extracting DensePose ===")
-        extract_densepose(image_dir, config["densepose"]["output_dir"], device)
 
     if "agnostic" in args.steps and config.get("agnostic", {}).get("enabled", True):
         print("=== Building agnostic representations ===")

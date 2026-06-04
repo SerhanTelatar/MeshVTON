@@ -25,30 +25,30 @@ image:
 
 # --- 3D Garment Assets ---
 garments_3d:
-  root_dir: "data/garments_3d"               # 3D giysi mesh dosyaları
+  root_dir: "data/garments_3d"               # 3D garment mesh files
   supported_formats: [".obj", ".glb", ".ply", ".off"]
   texture_resolution: 1024
   categories:
-    - upper_body        # T-shirt, gömlek, ceket
-    - lower_body        # Pantolon, etek
-    - dresses           # Elbiseler
-    - outerwear         # Mont, kaban
+    - upper_body        # T-shirt, shirt, jacket
+    - lower_body        # pants, skirt
+    - dresses           # dresses
+    - outerwear         # coat, parka
 
 # --- SMPL-X Body Models ---
 smplx:
-  model_dir: "checkpoints/pretrained/smplx"   # SMPL-X model dosyaları
+  model_dir: "checkpoints/pretrained/smplx"   # SMPL-X model files
   gender: "neutral"                            # neutral, male, female
-  body_params_dir: "data/processed/smplx_params"  # Kişi başına beden parametreleri
+  body_params_dir: "data/processed/smplx_params"  # per-person body parameters
   num_betas: 10
   use_face_contour: true
 
 # --- 3D Render Outputs ---
 renders_3d:
-  output_dir: "data/processed/renders_3d"     # Render edilmiş giysi görüntüleri
+  output_dir: "data/processed/renders_3d"     # rendered garment images
   normal_maps_dir: "data/processed/normal_maps"
   depth_maps_dir: "data/processed/depth_maps"
   render_resolution: 512
-  num_views: 1                                 # Kaç açıdan render (1=ön, 4=çok açılı)
+  num_views: 1                                 # how many camera angles (1 = front, 4 = multi-view)
 
 # --- Augmentation ---
 augmentation:
@@ -69,11 +69,10 @@ augmentation:
     enabled: false
     probability: 0.1
 
-# --- 2D Preprocessing Outputs (mevcut) ---
+# --- 2D Preprocessing Outputs ---
 preprocessed:
   poses_dir: "data/processed/poses"
   segments_dir: "data/processed/segments"
-  densepose_dir: "data/processed/densepose"
   agnostic_dir: "data/processed/agnostic"
 
 # --- Sampling ---

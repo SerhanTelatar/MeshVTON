@@ -5,9 +5,9 @@ Uses IDM-VTON's ORIGINAL hacked UNet classes (unet_hacked_tryon,
 unet_hacked_garmnet) for proper weight loading and forward pass.
 The only trainable module is ControlNet3D.
 
-Architecture (from architecture_diagram.png):
+Architecture (see docs/architecture_diagram.png):
     3D garment mesh → SMPL-X drape → PyTorch3D render → ControlNet3D ──┐
-    Person image → agnostic mask + pose + DensePose → VAE encode ───── TryonNet
+    Person image → agnostic mask → VAE encode ─────────────────────────── TryonNet
     Garment image → frozen GarmentNet → IP-Adapter → cross-attention ──┘
 """
 
@@ -303,8 +303,6 @@ class TryOnPipeline(nn.Module):
         person_image: torch.Tensor,
         garment_image: torch.Tensor,
         agnostic_mask: torch.Tensor,
-        pose_map: torch.Tensor,
-        densepose_map: Optional[torch.Tensor] = None,
         conditioning_3d: Optional[torch.Tensor] = None,
         garment_text: Optional[str] = None,
     ) -> dict[str, torch.Tensor]:
@@ -315,8 +313,6 @@ class TryOnPipeline(nn.Module):
             person_image: (B, 3, H, W) target person image
             garment_image: (B, 3, H, W) garment image
             agnostic_mask: (B, 3, H, W) clothing-agnostic person
-            pose_map: (B, C, H, W) pose/densepose map
-            densepose_map: (B, C, H, W) optional DensePose UV map
             conditioning_3d: (B, 9, H, W) optional 3D conditioning
             garment_text: optional garment description text
         """
@@ -406,8 +402,6 @@ class TryOnPipeline(nn.Module):
         self,
         garment_image: torch.Tensor,
         agnostic_mask: torch.Tensor,
-        pose_map: torch.Tensor,
-        densepose_map: Optional[torch.Tensor] = None,
         conditioning_3d: Optional[torch.Tensor] = None,
         garment_text: Optional[str] = None,
         num_inference_steps: int = 50,

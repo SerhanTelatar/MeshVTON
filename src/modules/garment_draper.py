@@ -1,8 +1,7 @@
 """
-Garment Draper — 3D giysi mesh'ini SMPL-X beden modeline giydirme.
+Garment Draper — drapes a 3D garment mesh onto the SMPL-X body model.
 
-3D giysi asset'ını (mesh) SMPL-X beden mesh'ine deform ederek
-beden şekline uyduran modül.
+Deforms a 3D garment asset (mesh) to fit the SMPL-X body mesh.
 """
 
 from typing import Optional
@@ -15,17 +14,19 @@ import torch.nn.functional as F
 
 class GarmentDraper(nn.Module):
     """
-    3D giysi mesh'ini beden modeline drape eder.
+    Drapes a 3D garment mesh onto a body model.
 
-    İki aşamalı süreç:
-    1. Coarse draping: Giysi mesh'ini beden mesh'ine Linear Blend Skinning (LBS) ile deform et
-    2. Fine draping: Neural network ile fizik-tabanlı ince ayar (kırışıklar, sarkmalar)
+    Two-stage process:
+    1. Coarse draping: deform the garment mesh via Linear Blend Skinning (LBS)
+       toward the body mesh.
+    2. Fine draping: neural network refinement for physics-aware details
+       (wrinkles, sagging).
 
     Args:
-        num_body_verts: SMPL-X beden mesh köşe sayısı (10475).
-        garment_feature_dim: Giysi özellik boyutu.
-        hidden_dim: Gizli katman boyutu.
-        num_refine_layers: İnce ayar katman sayısı.
+        num_body_verts: SMPL-X body mesh vertex count (10475).
+        garment_feature_dim: Garment feature dimensionality.
+        hidden_dim: Hidden layer size.
+        num_refine_layers: Number of refinement layers.
     """
 
     def __init__(self, num_body_verts: int = 10475, garment_feature_dim: int = 256,
@@ -33,16 +34,16 @@ class GarmentDraper(nn.Module):
         super().__init__()
         self.num_body_verts = num_body_verts
 
-        # Coarse draping: Giysi→Beden eşleştirme ağı
+        # Coarse draping: garment→body correspondence network
         self.correspondence_net = nn.Sequential(
-            nn.Linear(6, hidden_dim),  # Giysi vertex (3) + nearest body vertex (3)
+            nn.Linear(6, hidden_dim),  # garment vertex (3) + nearest body vertex (3)
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(hidden_dim, 3),  # Offset vektörü
+            nn.Linear(hidden_dim, 3),  # offset vector
         )
 
-        # Fine draping: Fizik-tabanlı ince ayar
+        # Fine draping: physics-aware refinement
         self.refine_layers = nn.ModuleList()
         for i in range(num_refine_layers):
             self.refine_layers.append(
@@ -52,9 +53,9 @@ class GarmentDraper(nn.Module):
                 )
             )
 
-        # Kumaş malzeme özellikleri etkisi
+        # Fabric material property embedding
         self.material_mlp = nn.Sequential(
-            nn.Linear(8, 64),  # 8 malzeme parametresi
+            nn.Linear(8, 64),  # 8 material parameters
             nn.ReLU(),
             nn.Linear(64, garment_feature_dim),
         )
@@ -64,45 +65,45 @@ class GarmentDraper(nn.Module):
                 skinning_weights: Optional[torch.Tensor] = None,
                 material_params: Optional[torch.Tensor] = None) -> dict[str, torch.Tensor]:
         """
-        Giysi mesh'ini beden mesh'ine drape et.
+        Drape the garment mesh onto the body mesh.
 
         Args:
-            garment_verts: (B, Vg, 3) giysi köşe noktaları (T-pose'da).
-            garment_faces: (Fg, 3) giysi yüz indeksleri.
-            body_verts: (B, Vb, 3) SMPL-X beden köşeleri (hedef poz).
-            body_faces: (Fb, 3) beden yüz indeksleri.
-            skinning_weights: (Vg, J) LBS ağırlıkları (opsiyonel).
-            material_params: (B, 8) kumaş malzeme parametreleri.
+            garment_verts: (B, Vg, 3) garment vertices (in T-pose).
+            garment_faces: (Fg, 3) garment face indices.
+            body_verts: (B, Vb, 3) SMPL-X body vertices (target pose).
+            body_faces: (Fb, 3) body face indices.
+            skinning_weights: (Vg, J) optional LBS weights.
+            material_params: (B, 8) fabric material parameters.
 
         Returns:
             Dict:
-                'draped_verts': (B, Vg, 3) deform edilmiş giysi köşeleri
-                'offsets': (B, Vg, 3) ince ayar offset'leri
-                'normals': (B, Vg, 3) yüzey normalleri
+                'draped_verts': (B, Vg, 3) deformed garment vertices
+                'offsets': (B, Vg, 3) refinement offsets
+                'normals': (B, Vg, 3) surface normals
         """
         b, vg, _ = garment_verts.shape
 
-        # 1. Coarse Draping: En yakın beden noktasına göre deformasyon
+        # 1. Coarse draping: deform based on the nearest body point
         coarse_verts = self._coarse_drape(garment_verts, body_verts)
 
-        # 2. Malzeme özelliklerini hesapla
+        # 2. Encode material properties
         if material_params is not None:
             mat_feat = self.material_mlp(material_params)  # (B, feat_dim)
             mat_feat = mat_feat.unsqueeze(1).expand(-1, vg, -1)  # (B, Vg, feat_dim)
         else:
             mat_feat = torch.zeros(b, vg, 256, device=garment_verts.device)
 
-        # 3. Fine Draping: Detay ince ayarı
+        # 3. Fine draping: detail refinement
         x = torch.cat([coarse_verts, mat_feat], dim=-1)
         for layer in self.refine_layers:
             x = layer(x)
-        offsets = x  # (B, Vg, 3) — ince deformasyon offset'leri
+        offsets = x  # (B, Vg, 3) — fine deformation offsets
 
-        # Çarpışma önleme: Beden mesh'inin dışında kalmasını sağla
-        draped_verts = coarse_verts + offsets * 0.05  # Küçük ölçekli offset
+        # Collision avoidance: keep garment outside the body mesh
+        draped_verts = coarse_verts + offsets * 0.05  # small-scale offset
         draped_verts = self._collision_handling(draped_verts, body_verts)
 
-        # Normalleri hesapla
+        # Compute normals
         normals = self._compute_normals(draped_verts, garment_faces)
 
         return {
@@ -113,21 +114,21 @@ class GarmentDraper(nn.Module):
 
     def _coarse_drape(self, garment_verts: torch.Tensor,
                       body_verts: torch.Tensor) -> torch.Tensor:
-        """Giysi köşelerini en yakın beden noktalarına göre yerleştir."""
+        """Place garment vertices at the nearest body vertices."""
         b, vg, _ = garment_verts.shape
 
-        # Her giysi köşesinin en yakın beden noktasını bul
+        # Find the nearest body vertex for each garment vertex
         # (B, Vg, 1, 3) - (B, 1, Vb, 3) → (B, Vg, Vb)
         dists = torch.cdist(garment_verts, body_verts)
         nearest_idx = dists.argmin(dim=-1)  # (B, Vg)
 
-        # En yakın beden noktalarını topla
+        # Gather the nearest body points
         nearest_body = torch.gather(
             body_verts, 1,
             nearest_idx.unsqueeze(-1).expand(-1, -1, 3)
         )
 
-        # Correspondence network ile offset hesapla
+        # Compute offset with the correspondence network
         combined = torch.cat([garment_verts, nearest_body], dim=-1)  # (B, Vg, 6)
         offsets = self.correspondence_net(combined)
 
@@ -136,7 +137,7 @@ class GarmentDraper(nn.Module):
     def _collision_handling(self, garment_verts: torch.Tensor,
                             body_verts: torch.Tensor,
                             margin: float = 0.005) -> torch.Tensor:
-        """Giysi-beden çarpışmasını önle (basit itme yöntemi)."""
+        """Avoid garment-body collisions (simple push-out)."""
         dists = torch.cdist(garment_verts, body_verts)
         min_dists, nearest_idx = dists.min(dim=-1)
 
@@ -145,11 +146,11 @@ class GarmentDraper(nn.Module):
             nearest_idx.unsqueeze(-1).expand(-1, -1, 3)
         )
 
-        # Yön vektörü (giysi → dışarı)
+        # Direction vector (garment → outward)
         direction = garment_verts - nearest_body
         direction_norm = direction / (direction.norm(dim=-1, keepdim=True) + 1e-8)
 
-        # Çok yakın köşeleri dışarı it
+        # Push vertices that are too close back outside
         too_close = min_dists < margin
         push = direction_norm * margin
         correction = push * too_close.unsqueeze(-1).float()
@@ -158,7 +159,7 @@ class GarmentDraper(nn.Module):
 
     def _compute_normals(self, vertices: torch.Tensor,
                          faces: torch.Tensor) -> torch.Tensor:
-        """Köşe normallerini hesapla."""
+        """Compute per-vertex normals."""
         if faces.dim() == 2:
             faces = faces.unsqueeze(0).expand(vertices.shape[0], -1, -1)
 
@@ -169,7 +170,7 @@ class GarmentDraper(nn.Module):
         face_normals = torch.cross(v1 - v0, v2 - v0, dim=-1)
         face_normals = face_normals / (face_normals.norm(dim=-1, keepdim=True) + 1e-8)
 
-        # Köşe normallerini yüz normallerinden ortalayarak hesapla
+        # Aggregate face normals into vertex normals
         vertex_normals = torch.zeros_like(vertices)
         for i in range(3):
             vertex_normals.scatter_add_(1, faces[:, :, i:i+1].expand(-1, -1, 3), face_normals)
@@ -179,7 +180,7 @@ class GarmentDraper(nn.Module):
 
 
 class GarmentRefineBlock(nn.Module):
-    """Giysi deformasyon ince ayar bloğu."""
+    """Garment deformation refinement block."""
 
     def __init__(self, in_dim: int, out_dim: int, dropout: float = 0.1):
         super().__init__()
@@ -198,10 +199,10 @@ class GarmentRefineBlock(nn.Module):
 
 def load_garment_mesh(path: str) -> dict[str, np.ndarray]:
     """
-    3D giysi mesh dosyasını yükle (.obj, .glb, .ply).
+    Load a 3D garment mesh file (.obj, .glb, .ply).
 
     Args:
-        path: Mesh dosya yolu.
+        path: Mesh file path.
 
     Returns:
         Dict: 'vertices' (V, 3), 'faces' (F, 3), 'uv' (V, 2), 'texture' (H, W, 3)
@@ -218,13 +219,13 @@ def load_garment_mesh(path: str) -> dict[str, np.ndarray]:
             "faces": np.array(mesh.faces, dtype=np.int64),
         }
 
-        # UV koordinatları
+        # UV coordinates
         if hasattr(mesh.visual, "uv") and mesh.visual.uv is not None:
             result["uv"] = np.array(mesh.visual.uv, dtype=np.float32)
         else:
             result["uv"] = np.zeros((len(mesh.vertices), 2), dtype=np.float32)
 
-        # Doku
+        # Texture
         if hasattr(mesh.visual, "material") and hasattr(mesh.visual.material, "image"):
             result["texture"] = np.array(mesh.visual.material.image)[:, :, :3]
         else:
@@ -233,7 +234,7 @@ def load_garment_mesh(path: str) -> dict[str, np.ndarray]:
         return result
 
     except ImportError:
-        print("Uyarı: trimesh bulunamadı. pip install trimesh ile yükleyin.")
+        print("Warning: trimesh not found. Install it with `pip install trimesh`.")
         return {
             "vertices": np.zeros((100, 3), dtype=np.float32),
             "faces": np.zeros((50, 3), dtype=np.int64),

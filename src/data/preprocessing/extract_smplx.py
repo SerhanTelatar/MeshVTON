@@ -12,7 +12,7 @@ from src.modules.smplx_estimator import SMPLXEstimator
 def extract_smplx(image_dir: str, output_dir: str, model_dir: str,
                    device: str = "cuda", save_mesh: bool = True,
                    mesh_dir: str = None):
-    """Tüm kişi görüntülerinden SMPL-X parametrelerini çıkar."""
+    """Extract SMPL-X parameters from every person image in a directory."""
     img_dir = Path(image_dir)
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -26,7 +26,7 @@ def extract_smplx(image_dir: str, output_dir: str, model_dir: str,
     extensions = {".jpg", ".jpeg", ".png", ".webp"}
     images = sorted([f for f in img_dir.iterdir() if f.suffix.lower() in extensions])
 
-    print(f"SMPL-X parametrelerini çıkarılıyor: {len(images)} görüntü...")
+    print(f"Extracting SMPL-X parameters from {len(images)} images...")
     for img_path in tqdm(images):
         image = cv2.imread(str(img_path))
         if image is None:
@@ -35,7 +35,7 @@ def extract_smplx(image_dir: str, output_dir: str, model_dir: str,
         result = estimator.estimate(image)
         stem = img_path.stem
 
-        # Parametreleri kaydet
+        # Save parameters
         np.savez(
             out_dir / f"{stem}.npz",
             betas=result["betas"],
@@ -44,18 +44,18 @@ def extract_smplx(image_dir: str, output_dir: str, model_dir: str,
             transl=result["transl"],
         )
 
-        # Mesh'i OBJ olarak kaydet (opsiyonel)
+        # Save mesh as OBJ (optional)
         if save_mesh and mesh_dir and "vertices" in result:
             _save_obj(
                 Path(mesh_dir) / f"{stem}.obj",
                 result["vertices"], result["faces"],
             )
 
-    print(f"SMPL-X parametreleri çıkarıldı: {out_dir}")
+    print(f"SMPL-X parameters extracted to: {out_dir}")
 
 
 def _save_obj(path: Path, vertices: np.ndarray, faces: np.ndarray):
-    """Basit OBJ dosyası yaz."""
+    """Write a simple OBJ file."""
     with open(path, "w") as f:
         for v in vertices:
             f.write(f"v {v[0]:.6f} {v[1]:.6f} {v[2]:.6f}\n")
@@ -64,7 +64,7 @@ def _save_obj(path: Path, vertices: np.ndarray, faces: np.ndarray):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="SMPL-X beden tahmini")
+    parser = argparse.ArgumentParser(description="SMPL-X body estimation")
     parser.add_argument("--image_dir", default="data/raw/images")
     parser.add_argument("--output_dir", default="data/processed/smplx_params")
     parser.add_argument("--model_dir", default="checkpoints/pretrained")

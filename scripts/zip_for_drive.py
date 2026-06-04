@@ -12,17 +12,17 @@ def zip_folder(src_dir, zip_name, extensions=None):
     """Zip a folder's contents."""
     src = Path(src_dir)
     if not src.exists():
-        print(f"  ⚠️ {src_dir} bulunamadı, atlıyorum")
+        print(f"  {src_dir} not found, skipping")
         return
-    
+
     out = DRIVE / zip_name
     if out.exists():
-        print(f"  ⏭️ {zip_name} zaten mevcut, atlıyorum")
+        print(f"  {zip_name} already exists, skipping")
         return
-    
-    print(f"  📦 {zip_name} oluşturuluyor...")
+
+    print(f"  Creating {zip_name}...")
     count = 0
-    with zipfile.ZipFile(out, 'w', zipfile.ZIP_STORED) as zf:  # ZIP_STORED = sıkıştırma yok (hızlı)
+    with zipfile.ZipFile(out, 'w', zipfile.ZIP_STORED) as zf:  # ZIP_STORED = no compression (fast)
         for root, dirs, files in os.walk(src):
             for f in files:
                 fp = Path(root) / f
@@ -32,10 +32,10 @@ def zip_folder(src_dir, zip_name, extensions=None):
                 zf.write(fp, arcname)
                 count += 1
                 if count % 1000 == 0:
-                    print(f"    ... {count} dosya eklendi")
-    
+                    print(f"    ... {count} files added")
+
     size_mb = out.stat().st_size / 1e6
-    print(f"  ✅ {zip_name} → {count} dosya, {size_mb:.0f} MB")
+    print(f"  {zip_name} → {count} files, {size_mb:.0f} MB")
 
 
 def zip_images(src_dir, zip_name):
@@ -43,10 +43,10 @@ def zip_images(src_dir, zip_name):
     src = Path(src_dir)
     out = DRIVE / zip_name
     if out.exists():
-        print(f"  ⏭️ {zip_name} zaten mevcut, atlıyorum")
+        print(f"  {zip_name} already exists, skipping")
         return
-    
-    print(f"  📦 {zip_name} oluşturuluyor...")
+
+    print(f"  Creating {zip_name}...")
     count = 0
     with zipfile.ZipFile(out, 'w', zipfile.ZIP_STORED) as zf:
         for f in sorted(src.iterdir()):
@@ -54,41 +54,40 @@ def zip_images(src_dir, zip_name):
                 zf.write(f, f"images/{f.name}")
                 count += 1
                 if count % 2000 == 0:
-                    print(f"    ... {count} dosya eklendi")
-    
+                    print(f"    ... {count} files added")
+
     size_mb = out.stat().st_size / 1e6
-    print(f"  ✅ {zip_name} → {count} dosya, {size_mb:.0f} MB")
+    print(f"  {zip_name} → {count} files, {size_mb:.0f} MB")
 
 
 if __name__ == "__main__":
     print("=" * 50)
-    print("  Drive Upload ZIP'leri Oluşturuluyor")
+    print("  Building Drive upload ZIPs")
     print("=" * 50)
     print()
-    
-    # 1. Kişi görüntüleri
+
+    # 1. Person images
     zip_images(PROJECT / "data/raw/images", "images.zip")
-    
-    # 2. Preprocessing çıktıları
+
+    # 2. Preprocessing outputs
     zip_folder(PROJECT / "data/processed/poses", "poses.zip")
     zip_folder(PROJECT / "data/processed/segments", "segments.zip")
-    zip_folder(PROJECT / "data/processed/densepose", "densepose.zip")
     zip_folder(PROJECT / "data/processed/agnostic", "agnostic.zip")
-    
+
     # 3. 3D garment meshes
-    zip_folder(PROJECT / "data/garments_3d", "garments_3d.zip", 
+    zip_folder(PROJECT / "data/garments_3d", "garments_3d.zip",
                extensions={'.obj', '.png', '.mat', '.json'})
-    
+
     # 4. SMPL-X + VPoser
     zip_folder(PROJECT / "checkpoints/pretrained", "pretrained.zip")
-    
+
     print()
     print("=" * 50)
-    print("  drive/ klasöründeki dosyalar:")
+    print("  Files in drive/ folder:")
     print("=" * 50)
     total = 0
     for f in sorted(DRIVE.iterdir()):
         size = f.stat().st_size / 1e6
         total += size
         print(f"  {f.name:30s} {size:>8.1f} MB")
-    print(f"  {'TOPLAM':30s} {total:>8.1f} MB")
+    print(f"  {'TOTAL':30s} {total:>8.1f} MB")

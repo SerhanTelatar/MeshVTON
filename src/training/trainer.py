@@ -160,8 +160,6 @@ class Trainer:
                     person_image=batch["person_image"],
                     garment_image=batch["garment_image"],
                     agnostic_mask=batch["agnostic_image"],
-                    pose_map=batch["pose_map"],
-                    densepose_map=batch.get("densepose_map"),
                     conditioning_3d=batch.get("conditioning_3d"),
                 )
                 loss = outputs["loss"] / self.grad_accum_steps
@@ -206,8 +204,6 @@ class Trainer:
                 person_image=batch["person_image"],
                 garment_image=batch["garment_image"],
                 agnostic_mask=batch["agnostic_image"],
-                pose_map=batch["pose_map"],
-                densepose_map=batch.get("densepose_map"),
                 conditioning_3d=batch.get("conditioning_3d"),
             )
             total_loss += outputs["loss"].item()

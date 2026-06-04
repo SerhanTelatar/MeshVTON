@@ -1,8 +1,8 @@
 """
-Diferansiyellenebilir Mesh Renderer — PyTorch3D tabanlı 3D→2D render.
+Differentiable Mesh Renderer — PyTorch3D-based 3D→2D rendering.
 
-SMPL-X beden mesh'i üzerine giydirilen giysi mesh'ini
-diferansiyellenebilir şekilde 2D görüntüye dönüştürür.
+Renders the garment mesh draped on the SMPL-X body into a 2D image
+in a differentiable way (gradients flow back into the mesh).
 """
 
 from typing import Optional
@@ -13,17 +13,17 @@ import torch.nn as nn
 
 class MeshRenderer:
     """
-    PyTorch3D tabanlı diferansiyellenebilir mesh renderer.
+    PyTorch3D-based differentiable mesh renderer.
 
-    3D mesh + doku → 2D render görüntüsü dönüşümü yapar.
-    Eğitim sırasında geri yayılım destekler.
+    Converts (3D mesh + texture) into a 2D rendered image. Supports
+    backpropagation during training.
 
     Args:
-        image_size: Çıktı render boyutu.
-        device: Hesaplama cihazı.
-        shader_type: 'phong', 'flat' veya 'silhouette'.
-        faces_per_pixel: Piksel başına render edilen yüz sayısı.
-        bg_color: Arka plan rengi (R, G, B) [0-1].
+        image_size: Output render resolution.
+        device: Compute device.
+        shader_type: 'phong', 'flat', or 'silhouette'.
+        faces_per_pixel: Number of faces rasterized per pixel.
+        bg_color: Background color (R, G, B) in [0, 1].
     """
 
     def __init__(self, image_size: int = 512, device: str = "cuda",
@@ -37,7 +37,7 @@ class MeshRenderer:
         self.renderer = None
 
     def setup(self):
-        """PyTorch3D renderer bileşenlerini kur."""
+        """Set up the PyTorch3D renderer components."""
         try:
             from pytorch3d.renderer import (
                 MeshRenderer as PT3DMeshRenderer,
@@ -52,11 +52,11 @@ class MeshRenderer:
                 look_at_view_transform,
             )
 
-            # Kamera ayarları
+            # Camera setup
             R, T = look_at_view_transform(dist=2.7, elev=0, azim=0)
             self.cameras = FoVPerspectiveCameras(device=self.device, R=R, T=T)
 
-            # Aydınlatma
+            # Lighting
             self.lights = PointLights(
                 device=self.device,
                 location=[[0.0, 1.0, 2.0]],
@@ -65,14 +65,14 @@ class MeshRenderer:
                 specular_color=((0.3, 0.3, 0.3),),
             )
 
-            # Rasterizasyon ayarları
+            # Rasterization settings
             raster_settings = RasterizationSettings(
                 image_size=self.image_size,
                 blur_radius=0.0,
                 faces_per_pixel=self.faces_per_pixel,
             )
 
-            # Shader seçimi
+            # Shader selection
             if self.shader_type == "silhouette":
                 shader = SoftSilhouetteShader()
             else:
@@ -89,26 +89,26 @@ class MeshRenderer:
                 ),
                 shader=shader,
             )
-            print(f"PyTorch3D renderer kuruldu: {self.shader_type}")
+            print(f"PyTorch3D renderer initialized: {self.shader_type}")
 
         except ImportError:
-            print("Uyarı: PyTorch3D bulunamadı. Placeholder renderer kullanılacak.")
+            print("Warning: PyTorch3D not found. Falling back to placeholder renderer.")
             self.renderer = None
 
     def render(self, vertices: torch.Tensor, faces: torch.Tensor,
                textures: Optional[torch.Tensor] = None,
                camera_params: Optional[dict] = None) -> torch.Tensor:
         """
-        3D mesh'i 2D görüntüye render et.
+        Render a 3D mesh into a 2D image.
 
         Args:
-            vertices: (B, V, 3) köşe noktaları.
-            faces: (F, 3) üçgen yüz indeksleri.
-            textures: (B, V, 3) köşe renkleri veya (B, H, W, 3) UV doku.
-            camera_params: Opsiyonel kamera parametreleri override.
+            vertices: (B, V, 3) vertex positions.
+            faces: (F, 3) triangle face indices.
+            textures: (B, V, 3) vertex colors or (B, H, W, 3) UV texture.
+            camera_params: Optional camera parameter override.
 
         Returns:
-            (B, 4, H, W) RGBA render sonucu.
+            (B, 4, H, W) RGBA render result.
         """
         if self.renderer is None:
             self.setup()
@@ -119,22 +119,22 @@ class MeshRenderer:
             return self._render_placeholder(vertices.shape[0])
 
     def _render_pytorch3d(self, vertices, faces, textures, camera_params):
-        """PyTorch3D ile render."""
+        """Render using PyTorch3D."""
         from pytorch3d.structures import Meshes
         from pytorch3d.renderer import TexturesVertex
 
         b = vertices.shape[0]
 
-        # Doku hazırla
+        # Prepare texture
         if textures is None:
-            textures = torch.ones_like(vertices) * 0.7  # Gri varsayılan
+            textures = torch.ones_like(vertices) * 0.7  # default gray
         tex = TexturesVertex(verts_features=textures)
 
-        # Mesh oluştur
+        # Build mesh
         faces_batch = faces.unsqueeze(0).expand(b, -1, -1) if faces.dim() == 2 else faces
         meshes = Meshes(verts=vertices, faces=faces_batch, textures=tex)
 
-        # Kamera güncelle
+        # Update camera
         if camera_params is not None:
             from pytorch3d.renderer import look_at_view_transform, FoVPerspectiveCameras
             R, T = look_at_view_transform(
@@ -154,17 +154,17 @@ class MeshRenderer:
         return images
 
     def _render_placeholder(self, batch_size: int) -> torch.Tensor:
-        """PyTorch3D olmadan placeholder render."""
+        """Placeholder render when PyTorch3D is unavailable."""
         return torch.ones(batch_size, 4, self.image_size, self.image_size,
                           device=self.device) * 0.5
 
     def render_normal_map(self, vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
-        """Normal haritası render et (geometri koşullandırması için)."""
+        """Render a normal map (for geometry conditioning)."""
         b = vertices.shape[0]
         if faces.dim() == 2:
             faces = faces.unsqueeze(0).expand(b, -1, -1)
 
-        # Yüz normallerini hesapla
+        # Compute face normals
         v0 = torch.gather(vertices, 1, faces[:, :, 0:1].expand(-1, -1, 3))
         v1 = torch.gather(vertices, 1, faces[:, :, 1:2].expand(-1, -1, 3))
         v2 = torch.gather(vertices, 1, faces[:, :, 2:3].expand(-1, -1, 3))
@@ -172,7 +172,7 @@ class MeshRenderer:
         normals = torch.cross(v1 - v0, v2 - v0, dim=-1)
         normals = normals / (normals.norm(dim=-1, keepdim=True) + 1e-8)
 
-        # Köşe normallerini basitle (orta değer)
+        # Average face normals into vertex normals
         vertex_normals = torch.zeros_like(vertices)
         for i in range(3):
             vertex_normals.scatter_add_(
@@ -182,13 +182,13 @@ class MeshRenderer:
             )
         vertex_normals = vertex_normals / (vertex_normals.norm(dim=-1, keepdim=True) + 1e-8)
 
-        # Normal haritasını doku olarak render et
+        # Render normals as colors
         normal_colors = (vertex_normals + 1) / 2  # [-1,1] → [0,1]
         return self.render(vertices, faces[0] if faces.dim() == 3 else faces, normal_colors)
 
     def render_depth_map(self, vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
-        """Derinlik haritası render et."""
-        z_values = vertices[:, :, 2:3]  # Z koordinatı
+        """Render a depth map."""
+        z_values = vertices[:, :, 2:3]  # z coordinate
         z_min = z_values.min(dim=1, keepdim=True)[0]
         z_max = z_values.max(dim=1, keepdim=True)[0]
         depth_normalized = (z_values - z_min) / (z_max - z_min + 1e-8)
@@ -198,7 +198,7 @@ class MeshRenderer:
     def render_multiview(self, vertices: torch.Tensor, faces: torch.Tensor,
                          textures: Optional[torch.Tensor] = None,
                          num_views: int = 4) -> list[torch.Tensor]:
-        """Birden fazla açıdan render et."""
+        """Render the mesh from multiple camera azimuths."""
         azimuths = torch.linspace(0, 360, num_views + 1)[:-1]
         renders = []
         for azim in azimuths:

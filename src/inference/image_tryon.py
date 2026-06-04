@@ -18,7 +18,6 @@ from src.models.controlnet_3d import ControlNet3D
 from src.modules.pose_estimator import PoseEstimator
 from src.modules.segmentation import HumanSegmentation
 from src.modules.agnostic_mask import AgnosticMaskGenerator
-from src.modules.densepose import DensePoseExtractor
 from src.inference.postprocess import PostProcessor
 from src.utils.image_utils import load_image, save_image, pil_to_tensor, tensor_to_pil
 
@@ -49,7 +48,6 @@ class ImageTryOn:
         self.pose_estimator = PoseEstimator(device=str(self.device))
         self.segmentation = HumanSegmentation(device=str(self.device))
         self.agnostic_gen = AgnosticMaskGenerator()
-        self.densepose = DensePoseExtractor(device=str(self.device))
         self.postprocessor = PostProcessor(config=self.config.get("postprocess", {}))
 
         # Sampling settings
@@ -102,9 +100,7 @@ class ImageTryOn:
         agnostic_result = self.agnostic_gen.generate(
             person_np, seg_result["segmentation"], pose_result.get("keypoints"),
         )
-        dp_result = self.densepose.extract(person_np)
 
-        # Convert to tensors
         person_tensor = pil_to_tensor(
             Image.fromarray(person_np[:, :, ::-1]), self.resolution
         ).unsqueeze(0).to(self.device)
@@ -117,34 +113,13 @@ class ImageTryOn:
             Image.fromarray(agnostic_result["agnostic_image"][:, :, ::-1]), self.resolution
         ).unsqueeze(0).to(self.device)
 
-        pose_tensor = torch.from_numpy(
-            pose_result["pose_image"]
-        ).float().permute(2, 0, 1).unsqueeze(0).to(self.device) / 255.0
-        pose_tensor = torch.nn.functional.interpolate(
-            pose_tensor, size=(self.resolution, self.resolution),
-            mode="bilinear", align_corners=False,
-        )
-
-        densepose_tensor = self.densepose.iuv_to_tensor(
-            dp_result["iuv"]
-        ).unsqueeze(0).to(self.device)
-        densepose_tensor = torch.nn.functional.interpolate(
-            densepose_tensor, size=(self.resolution, self.resolution),
-            mode="bilinear", align_corners=False,
-        )
-        densepose_cond = densepose_tensor[:, :3]
-
-        # Generator
         generator = None
         if self.seed is not None:
             generator = torch.Generator(device=self.device).manual_seed(self.seed)
 
-        # Generate (no 3D conditioning in traditional mode)
         result_tensor = self.pipeline.generate(
             garment_image=garment_tensor,
             agnostic_mask=agnostic_tensor,
-            pose_map=pose_tensor,
-            densepose_map=densepose_cond,
             conditioning_3d=None,
             num_inference_steps=self.num_steps,
             guidance_scale=self.guidance_scale,
@@ -248,10 +223,8 @@ class ImageTryOn:
         agnostic_result = self.agnostic_gen.generate(
             person_np, seg_result["segmentation"], pose_result.get("keypoints"),
         )
-        dp_result = self.densepose.extract(person_np)
 
         # Use rendered garment as 2D garment input for GarmentNet
-        # (render from front view for the garment encoder)
         garment_front = self._mesh_renderer.render(
             draped["draped_verts"], garment_faces,
             camera_params={"dist": 2.7, "elev": 0, "azim": 0},
@@ -266,33 +239,13 @@ class ImageTryOn:
             self.resolution,
         ).unsqueeze(0).to(self.device)
 
-        pose_tensor = torch.from_numpy(
-            pose_result["pose_image"]
-        ).float().permute(2, 0, 1).unsqueeze(0).to(self.device) / 255.0
-        pose_tensor = torch.nn.functional.interpolate(
-            pose_tensor, size=(self.resolution, self.resolution),
-            mode="bilinear", align_corners=False,
-        )
-
-        densepose_tensor = self.densepose.iuv_to_tensor(
-            dp_result["iuv"]
-        ).unsqueeze(0).to(self.device)
-        densepose_tensor = torch.nn.functional.interpolate(
-            densepose_tensor, size=(self.resolution, self.resolution),
-            mode="bilinear", align_corners=False,
-        )
-
-        # Generator
         generator = None
         if self.seed is not None:
             generator = torch.Generator(device=self.device).manual_seed(self.seed)
 
-        # Generate with 3D conditioning
         result_tensor = self.pipeline.generate(
             garment_image=garment_front,
             agnostic_mask=agnostic_tensor,
-            pose_map=pose_tensor,
-            densepose_map=densepose_tensor[:, :3],
             conditioning_3d=conditioning_3d,
             num_inference_steps=self.num_steps,
             guidance_scale=self.guidance_scale,

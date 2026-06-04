@@ -1,4 +1,4 @@
-﻿"""
+"""
 Data Setup Script — Reorganize downloaded datasets for MeshVTON pipeline.
 
 Does the following:
@@ -54,7 +54,6 @@ def setup_directories():
         PROCESSED / "poses",
         PROCESSED / "poses" / "rendered",
         PROCESSED / "segments",
-        PROCESSED / "densepose",
         PROCESSED / "agnostic",
         PROCESSED / "smplx_params",
         PROCESSED / "smplx_meshes",
@@ -69,7 +68,7 @@ def setup_directories():
     ]
     for d in dirs:
         d.mkdir(parents=True, exist_ok=True)
-    print("✅ Dizin yapısı oluşturuldu")
+    print("Directory structure created")
 
 
 def reorganize_vitonhd():
@@ -78,7 +77,7 @@ def reorganize_vitonhd():
     test_dir = VITONHD_ROOT / "test"
 
     if not train_dir.exists():
-        print("⚠️  VITON-HD train klasörü bulunamadı, atlıyorum")
+        print("  VITON-HD train folder not found, skipping")
         return 0
 
     count = 0
@@ -92,18 +91,7 @@ def reorganize_vitonhd():
                 if not dest.exists():
                     shutil.copy2(img, dest)
                     count += 1
-        print(f"  ✅ Kişi görüntüleri kopyalandı: {count} dosya")
-
-    # --- DensePose → data/processed/densepose/ ---
-    src_dp = train_dir / "image-densepose"
-    if src_dp.exists():
-        dp_count = 0
-        for f in src_dp.iterdir():
-            dest = PROCESSED / "densepose" / f.name
-            if not dest.exists():
-                shutil.copy2(f, dest)
-                dp_count += 1
-        print(f"  ✅ DensePose haritaları kopyalandı: {dp_count} dosya")
+        print(f"  Person images copied: {count} files")
 
     # --- OpenPose → data/processed/poses/ ---
     src_pose_img = train_dir / "openpose_img"
@@ -115,7 +103,7 @@ def reorganize_vitonhd():
             if not dest.exists():
                 shutil.copy2(f, dest)
                 pose_count += 1
-        print(f"  ✅ Poz render'ları kopyalandı: {pose_count} dosya")
+        print(f"  Pose renders copied: {pose_count} files")
     if src_pose_json and src_pose_json.exists():
         json_count = 0
         for f in src_pose_json.iterdir():
@@ -123,7 +111,7 @@ def reorganize_vitonhd():
             if not dest.exists():
                 shutil.copy2(f, dest)
                 json_count += 1
-        print(f"  ✅ Poz JSON'ları kopyalandı: {json_count} dosya")
+        print(f"  Pose JSONs copied: {json_count} files")
 
     # --- Segmentation → data/processed/segments/ ---
     src_seg = train_dir / "image-parse-v3"
@@ -134,7 +122,7 @@ def reorganize_vitonhd():
             if not dest.exists():
                 shutil.copy2(f, dest)
                 seg_count += 1
-        print(f"  ✅ Segmentasyon haritaları kopyalandı: {seg_count} dosya")
+        print(f"  Segmentation maps copied: {seg_count} files")
 
     # --- Agnostic → data/processed/agnostic/ ---
     src_agn = train_dir / "agnostic-v3.2"
@@ -145,7 +133,7 @@ def reorganize_vitonhd():
             if not dest.exists():
                 shutil.copy2(f, dest)
                 agn_count += 1
-        print(f"  ✅ Agnostik maskeler kopyalandı: {agn_count} dosya")
+        print(f"  Agnostic masks copied: {agn_count} files")
 
     # Also process test set
     if test_dir and test_dir.exists():
@@ -158,7 +146,7 @@ def reorganize_vitonhd():
                     if not dest.exists():
                         shutil.copy2(img, dest)
                         test_count += 1
-            print(f"  ✅ Test kişi görüntüleri kopyalandı: {test_count} dosya")
+            print(f"  Test person images copied: {test_count} files")
 
     return count
 
@@ -166,7 +154,7 @@ def reorganize_vitonhd():
 def reorganize_cloth3d():
     """Organize CLOTH3D garment meshes by category."""
     if not CLOTH3D_ROOT.exists():
-        print("⚠️  CLOTH3D klasörü bulunamadı, atlıyorum")
+        print("  CLOTH3D folder not found, skipping")
         return {}
 
     garment_index = {}  # garment_id → {"category": ..., "type": ..., "path": ...}
@@ -192,14 +180,14 @@ def reorganize_cloth3d():
             if not dest_obj.exists():
                 shutil.copy2(obj_file, dest_obj)
 
-            # Copy texture PNG if exists
+            # Copy texture PNG if it exists
             png_file = obj_file.with_suffix(".png")
             if png_file.exists():
                 dest_tex = dest_dir / "texture.png"
                 if not dest_tex.exists():
                     shutil.copy2(png_file, dest_tex)
 
-            # Copy info.mat if exists
+            # Copy info.mat if it exists
             info_file = seq_dir / "info.mat"
             if info_file.exists():
                 dest_info = dest_dir / "info.mat"
@@ -213,7 +201,7 @@ def reorganize_cloth3d():
             }
             total += 1
 
-    print(f"  ✅ CLOTH3D giysileri organize edildi: {total} giysi")
+    print(f"  CLOTH3D garments organized: {total} items")
 
     # Print category breakdown
     categories = {}
@@ -221,7 +209,7 @@ def reorganize_cloth3d():
         cat = info["category"]
         categories[cat] = categories.get(cat, 0) + 1
     for cat, count in sorted(categories.items()):
-        print(f"     {cat}: {count} giysi")
+        print(f"     {cat}: {count} items")
 
     return garment_index
 
@@ -234,11 +222,11 @@ def fix_smplx_filename():
 
     if src.exists() and not dest.exists():
         shutil.copy2(src, dest)
-        print("  ✅ SMPLX_NEUTRAL_2020.npz → SMPLX_NEUTRAL.npz kopyalandı")
+        print("  Copied SMPLX_NEUTRAL_2020.npz → SMPLX_NEUTRAL.npz")
     elif dest.exists():
-        print("  ✅ SMPLX_NEUTRAL.npz zaten mevcut")
+        print("  SMPLX_NEUTRAL.npz already present")
     else:
-        print("  ⚠️  SMPL-X model dosyası bulunamadı!")
+        print("  SMPL-X model file not found!")
 
 
 def create_pairs_csv(garment_index: dict):
@@ -251,13 +239,13 @@ def create_pairs_csv(garment_index: dict):
     ])
 
     if not person_ids:
-        print("  ⚠️  Kişi görüntüsü bulunamadı, CSV oluşturulamıyor")
+        print("  No person images found, cannot create CSVs")
         return
 
     garment_ids = sorted(garment_index.keys())
 
     if not garment_ids:
-        print("  ⚠️  Giysi mesh'i bulunamadı, CSV oluşturulamıyor")
+        print("  No garment meshes found, cannot create CSVs")
         return
 
     # Create pairs: each person with multiple random garments
@@ -291,44 +279,44 @@ def create_pairs_csv(garment_index: dict):
             writer.writerow(["person_id", "garment_id"])
             writer.writerows(data)
 
-    print(f"  ✅ Çift dosyaları oluşturuldu:")
-    print(f"     train: {len(train_pairs)} çift")
-    print(f"     val:   {len(val_pairs)} çift")
-    print(f"     test:  {len(test_pairs)} çift")
-    print(f"     Toplam kişi: {len(person_ids)}, Toplam giysi: {len(garment_ids)}")
+    print(f"  Pair files created:")
+    print(f"     train: {len(train_pairs)} pairs")
+    print(f"     val:   {len(val_pairs)} pairs")
+    print(f"     test:  {len(test_pairs)} pairs")
+    print(f"     Total persons: {len(person_ids)}, total garments: {len(garment_ids)}")
 
 
 def main():
     print("=" * 60)
-    print("  MeshVTON Veri Organizasyonu")
+    print("  MeshVTON Data Organization")
     print("=" * 60)
     print()
 
-    print("1. Dizin yapısını oluşturuyor...")
+    print("1. Creating directory structure...")
     setup_directories()
     print()
 
-    print("2. VITON-HD dosyalarını organize ediyor...")
+    print("2. Organizing VITON-HD files...")
     reorganize_vitonhd()
     print()
 
-    print("3. CLOTH3D giysi mesh'lerini organize ediyor...")
+    print("3. Organizing CLOTH3D garment meshes...")
     garment_index = reorganize_cloth3d()
     print()
 
-    print("4. SMPL-X model dosya adını düzeltiyor...")
+    print("4. Fixing SMPL-X model filename...")
     fix_smplx_filename()
     print()
 
-    print("5. Eğitim çiftlerini (train_pairs.csv) oluşturuyor...")
+    print("5. Creating training pairs (train_pairs.csv)...")
     create_pairs_csv(garment_index)
     print()
 
     print("=" * 60)
-    print("  ✅ Veri organizasyonu tamamlandı!")
+    print("  Data organization complete")
     print("=" * 60)
     print()
-    print("Sonraki adımlar:")
+    print("Next steps:")
     print("  1. pip install smplx trimesh pytorch3d")
     print("  2. python src/data/preprocessing/extract_smplx.py")
     print("  3. python src/data/preprocessing/render_garment.py")

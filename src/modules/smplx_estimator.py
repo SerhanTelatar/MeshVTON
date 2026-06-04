@@ -12,31 +12,31 @@ import torch
 import torch.nn as nn
 
 
-# SMPL-X parametreleri
-SMPLX_NUM_BETAS = 10        # Vücut şekli parametreleri
-SMPLX_NUM_BODY_JOINTS = 21  # Vücut eklem sayısı
-SMPLX_NUM_HAND_JOINTS = 15  # Her el için eklem sayısı
-SMPLX_NUM_FACE_JOINTS = 3   # Çene eklemleri
-SMPLX_NUM_EXPRESSION = 10   # Yüz ifadesi parametreleri
+# SMPL-X parameters
+SMPLX_NUM_BETAS = 10        # body shape coefficients
+SMPLX_NUM_BODY_JOINTS = 21  # body joint count
+SMPLX_NUM_HAND_JOINTS = 15  # joints per hand
+SMPLX_NUM_FACE_JOINTS = 3   # jaw joints
+SMPLX_NUM_EXPRESSION = 10   # facial expression coefficients
 
 
 class SMPLXEstimator:
     """
-    SMPL-X parametrelerini kişi görüntüsünden tahmin eder.
+    Estimates SMPL-X parameters from a person image.
 
-    3D vücut mesh'i oluşturmak için gerekli parametreleri çıkarır:
-    - betas: Vücut şekli (10 boyutlu)
-    - body_pose: Eklem rotasyonları (21 eklem × 3 axis-angle)
-    - global_orient: Global rotasyon (1 × 3)
-    - transl: Global öteleme (1 × 3)
-    - left/right_hand_pose: El pozları
-    - expression: Yüz ifadesi
+    Produces all parameters needed to build a 3D body mesh:
+    - betas: body shape (10-dim)
+    - body_pose: joint rotations (21 joints × 3 axis-angle)
+    - global_orient: global rotation (1 × 3)
+    - transl: global translation (1 × 3)
+    - left/right_hand_pose: hand poses
+    - expression: facial expression
 
     Args:
-        model_path: SMPL-X model dosyası yolu.
-        regressor: Parametre regresyon modeli ('pymaf', 'expose', 'pixie').
-        gender: 'neutral', 'male', veya 'female'.
-        device: Hesaplama cihazı.
+        model_path: path to the SMPL-X model files.
+        regressor: parameter regressor ('pymaf', 'expose', 'pixie').
+        gender: 'neutral', 'male', or 'female'.
+        device: compute device.
     """
 
     def __init__(self, model_path: str = "checkpoints/pretrained",
@@ -50,12 +50,12 @@ class SMPLXEstimator:
         self.body_regressor = None
 
     def load_model(self):
-        """SMPL-X model ve regressor'ı yükle."""
+        """Load the SMPL-X model and the parameter regressor."""
         self._load_smplx()
         self._load_regressor()
 
     def _load_smplx(self):
-        """SMPL-X parametrik beden modelini yükle."""
+        """Load the SMPL-X parametric body model."""
         try:
             import smplx
             self.smplx_model = smplx.create(
@@ -69,66 +69,66 @@ class SMPLXEstimator:
             )
             self.smplx_model.to(self.device)
             self.smplx_model.eval()
-            print(f"SMPL-X model yüklendi: {self.gender}")
+            print(f"SMPL-X model loaded: {self.gender}")
         except ImportError:
-            print("Uyarı: smplx kütüphanesi bulunamadı. pip install smplx ile yükleyin.")
+            print("Warning: smplx library not found. Install it with `pip install smplx`.")
             self.smplx_model = None
         except Exception as e:
-            print(f"Uyarı: SMPL-X model yüklenemedi: {e}")
+            print(f"Warning: failed to load SMPL-X model: {e}")
             self.smplx_model = None
 
     def _load_regressor(self):
-        """Görüntüden SMPL-X parametrelerine regresyon modelini yükle."""
+        """Load the image-to-SMPL-X parameter regressor."""
         if self.regressor == "pymaf":
             self._load_pymaf()
         elif self.regressor == "expose":
             self._load_expose()
         else:
-            # Basit CNN tabanlı regressor (fallback)
+            # simple CNN-based regressor (fallback)
             self.body_regressor = SimpleSMPLXRegressor().to(self.device)
 
     def _load_pymaf(self):
-        """PyMAF-X regressor yükle."""
+        """Load the PyMAF-X regressor."""
         try:
             # PyMAF-X: Pixel-aligned Mesh Recovery
             self.body_regressor = SimpleSMPLXRegressor().to(self.device)
-            print("PyMAF-X regressor yüklendi (fallback)")
+            print("PyMAF-X regressor loaded (fallback)")
         except Exception:
             self.body_regressor = SimpleSMPLXRegressor().to(self.device)
 
     def _load_expose(self):
-        """ExPose regressor yükle."""
+        """Load the ExPose regressor."""
         self.body_regressor = SimpleSMPLXRegressor().to(self.device)
 
     @torch.no_grad()
     def estimate(self, image: np.ndarray) -> dict:
         """
-        Kişi görüntüsünden SMPL-X parametrelerini tahmin et.
+        Estimate SMPL-X parameters from a person image.
 
         Args:
-            image: (H, W, 3) BGR numpy görüntüsü.
+            image: (H, W, 3) BGR numpy image.
 
         Returns:
             Dict:
-                - 'betas': (10,) vücut şekli
-                - 'body_pose': (63,) eklem rotasyonları (21×3)
-                - 'global_orient': (3,) global rotasyon
-                - 'transl': (3,) global öteleme
-                - 'vertices': (10475, 3) mesh köşe noktaları
-                - 'joints': (127, 3) eklem konumları
-                - 'faces': (F, 3) üçgen yüz indeksleri
+                - 'betas': (10,) body shape
+                - 'body_pose': (63,) joint rotations (21×3)
+                - 'global_orient': (3,) global rotation
+                - 'transl': (3,) global translation
+                - 'vertices': (10475, 3) mesh vertices
+                - 'joints': (127, 3) joint positions
+                - 'faces': (F, 3) triangle face indices
         """
         if self.smplx_model is None or self.body_regressor is None:
             self.load_model()
 
-        # Görüntüyü hazırla
+        # Prepare the image
         import cv2
         img = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         img = cv2.resize(img, (224, 224))
         tensor = torch.from_numpy(img).float().permute(2, 0, 1).unsqueeze(0) / 255.0
         tensor = tensor.to(self.device)
 
-        # Parametreleri regresse et
+        # Regress parameters
         params = self.body_regressor(tensor)
 
         result = {
@@ -138,7 +138,7 @@ class SMPLXEstimator:
             "transl": params["transl"].cpu().numpy().squeeze(),
         }
 
-        # SMPL-X model ile mesh oluştur
+        # Build the mesh with the SMPL-X model
         if self.smplx_model is not None:
             smplx_output = self.smplx_model(
                 betas=params["betas"],
@@ -158,7 +158,7 @@ class SMPLXEstimator:
         return result
 
     def get_body_mesh(self, params: dict) -> dict:
-        """Parametre dict'inden SMPL-X mesh oluştur."""
+        """Build an SMPL-X mesh from a parameter dict."""
         if self.smplx_model is None:
             self.load_model()
 
@@ -179,7 +179,7 @@ class SMPLXEstimator:
                 "joints": np.zeros((127, 3))}
 
     def save_params(self, params: dict, output_path: str):
-        """SMPL-X parametrelerini .npz dosyasına kaydet."""
+        """Save SMPL-X parameters to a .npz file."""
         np.savez(output_path,
                  betas=params["betas"],
                  body_pose=params["body_pose"],
@@ -188,15 +188,15 @@ class SMPLXEstimator:
 
     @staticmethod
     def load_params(path: str) -> dict:
-        """Kaydedilmiş parametreleri yükle."""
+        """Load saved parameters."""
         data = np.load(path)
         return {k: data[k] for k in data.files}
 
 
 class SimpleSMPLXRegressor(nn.Module):
     """
-    Basit CNN → SMPL-X parametre regressor'ı.
-    Gerçek üretimde PyMAF-X veya ExPose ile değiştirilmeli.
+    Simple CNN → SMPL-X parameter regressor.
+    In production this should be replaced by PyMAF-X or ExPose.
     """
 
     def __init__(self):
@@ -211,7 +211,7 @@ class SimpleSMPLXRegressor(nn.Module):
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten(),
         )
-        # Parametre başlıkları
+        # Parameter heads
         self.fc_betas = nn.Linear(512, SMPLX_NUM_BETAS)
         self.fc_body_pose = nn.Linear(512, SMPLX_NUM_BODY_JOINTS * 3)
         self.fc_global_orient = nn.Linear(512, 3)

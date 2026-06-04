@@ -31,15 +31,6 @@ segmentation:
   output_format: "png"
   save_visualization: true
 
-# --- DensePose ---
-densepose:
-  enabled: true
-  model: "densepose_rcnn_R_50_FPN_s1x"
-  output_dir: "data/processed/densepose"
-  output_format: "npy"
-  save_visualization: true
-  confidence_threshold: 0.5
-
 # --- Agnostic Mask ---
 agnostic:
   enabled: true
@@ -53,7 +44,7 @@ agnostic:
     - "lower_body"
 
 # ============================================================================
-# 3D Pipeline — Yeni Ön-İşleme Adımları
+# 3D Pipeline — New Preprocessing Steps
 # ============================================================================
 
 # --- SMPL-X Body Estimation ---
@@ -63,7 +54,7 @@ smplx:
   regressor: "pymaf"          # pymaf, expose, pixie
   gender: "neutral"
   output_dir: "data/processed/smplx_params"
-  save_mesh: true             # .obj mesh dosyalarını da kaydet
+  save_mesh: true             # also save .obj mesh files
   mesh_dir: "data/processed/smplx_meshes"
   num_betas: 10
 
@@ -76,9 +67,9 @@ garment_render:
   depth_maps_dir: "data/processed/depth_maps"
   render_resolution: 512
   shader: "phong"             # phong, flat, silhouette
-  num_views: 1                # 1=ön, 4=çok açılı
+  num_views: 1                # 1 = front view, 4 = multi-view
   camera:
     dist: 2.7
     elev: 0
     azim: 0
-  background_color: [1.0, 1.0, 1.0]   # Beyaz arka plan
+  background_color: [1.0, 1.0, 1.0]   # white background

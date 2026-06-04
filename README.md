@@ -16,10 +16,11 @@ MeshVTON is a virtual try-on pipeline that combines 3D human body estimation (SM
 | **Body Estimation** | SMPL-X Estimator | Extracts 3D body shape, pose, and joints |
 | **Garment Fitting** | Garment Draper | Drapes 3D garment mesh onto SMPL-X body |
 | **3D Rendering** | PyTorch3D Renderer | Generates RGB render, normal map, depth map |
-| **3D Conditioning** | **ControlNet3D** (novel) | Injects 3D cues into the diffusion backbone |
-| **2D Conditioning** | DWPose + DensePose + ATR | Pose keypoints, UV maps, segmentation |
+| **Agnostic Generation** | DWPose + ATR + AgnosticMaskGenerator | Pose keypoints + body segmentation produce the clothing-agnostic person image |
+| **Garment Encoding** | GarmentNet + IP-Adapter (CLIP Vision) | Garment features for self-attention fusion and cross-attention |
+| **3D Conditioning** | **ControlNet3D** (novel) | 9ch (RGB+normal+depth) → multi-scale residuals into TryonNet |
 | **Backbone** | IDM-VTON (SDXL) | Frozen TryonNet + GarmentNet with cross-attention |
-| **Output** | SDXL VAE Decoder | Photorealistic try-on result |
+| **Output** | SDXL VAE Decoder + Post-Processing | Photorealistic try-on result |
 
 ### What Makes It Different
 
@@ -71,10 +72,13 @@ pip install "git+https://github.com/facebookresearch/pytorch3d.git"
 python scripts/setup_data.py
 ```
 
-3. **Preprocess** (requires GPU):
+3. **Preprocess** (requires GPU). Pose + segmentation feed the agnostic mask generator; SMPL-X + draper + render produce the 3D conditioning:
 ```bash
-python src/data/preprocessing/extract_smplx.py
-python src/data/preprocessing/render_garment.py
+python src/data/preprocessing/extract_pose.py      # DWPose keypoints
+python src/data/preprocessing/extract_segment.py   # ATR body parsing
+python src/data/preprocessing/build_agnostic.py    # clothing-agnostic person image
+python src/data/preprocessing/extract_smplx.py     # SMPL-X body params + mesh
+python src/data/preprocessing/render_garment.py    # RGB + normal + depth (per pair)
 ```
 
 ### Training
@@ -156,18 +160,26 @@ MeshVTON/
 
 ### 3D Pipeline (Novel Contribution)
 
-1. **SMPL-X Body Estimation** → Predicts body shape (β), pose (θ), and expression from person photo
-2. **Garment Draping** → Coarse alignment + neural fine-tuning + collision handling
+1. **SMPL-X Body Estimation** → Predicts body shape (β), pose (θ) from the person photo
+2. **Garment Draping** → Coarse alignment (MLP) + neural fine-tuning (refine blocks)
 3. **Differentiable Rendering** → PyTorch3D Phong renderer produces RGB + normal + depth maps
-4. **ControlNet3D Conditioning** → 9-channel (RGB+normal+depth) → multi-scale residuals → TryonNet injection
+4. **ControlNet3D Conditioning** → 9-channel (RGB+normal+depth) → multi-scale residuals injected into TryonNet at every encoder level + mid block
 
 ### IDM-VTON Backbone
 
-- **TryonNet**: SDXL UNet (2.6B params, frozen) — main denoising backbone
-- **GarmentNet**: SDXL UNet (2.6B params, frozen) — garment feature extraction
-- **Cross-Attention Fusion**: Garment features injected via IP-Adapter + cross-attention
+- **TryonNet**: SDXL UNet (~2.6B params, frozen) — main denoising backbone
+  - Input: 13ch = `cat(noisy_latent, agnostic_latent, inpaint_mask, garment_latent)`
+- **GarmentNet**: SDXL UNet (~2.6B params, frozen) — produces garment reference features for self-attention fusion in TryonNet
+- **IP-Adapter**: CLIP Vision Encoder + Resampler — produces 16 garment tokens fed into TryonNet cross-attention
 - **Scheduler**: DDPM training / DDIM inference (50 steps)
 - **Guidance**: Classifier-free guidance (w=7.5)
+
+### Regenerating the architecture diagram
+
+The diagram is generated from code-truthful Python:
+```bash
+python docs/draw_architecture.py
+```
 
 ## Citation
 

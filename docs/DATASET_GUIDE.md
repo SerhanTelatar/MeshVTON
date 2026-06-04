@@ -1,80 +1,80 @@
-﻿# MeshVTON: Dataset Hazırlama Rehberi
+# MeshVTON: Dataset Preparation Guide
 
-## 📥 1. İndirilecek Veriler
+## 1. Data to Download
 
-MeshVTON tam 3D pipeline'ı için **3 tip veri** gereklidir:
-
----
-
-### 1.1 — Kişi Görüntüleri (2D)
-
-Herhangi bir virtual try-on datasetinden kişi görüntüleri:
-
-| Dataset | İndirme | Boyut | Not |
-|---------|---------|-------|-----|
-| **VITON-HD** | [GitHub](https://github.com/shadow2496/VITON-HD) | ~12 GB | En yaygın benchmark |
-| **DressCode** | [GitHub](https://github.com/aimagelab/dress-code) | ~50 GB | Üst/Alt/Elbise |
-| **DeepFashion** | [mmlab.ie.cuhk.edu.hk](http://mmlab.ie.cuhk.edu.hk/projects/DeepFashion.html) | ~30 GB | Büyük ölçekli |
-
-**Adım**: Datasetlerin web sayfasına git → Academic kullanım için form doldur → İndirme linkini al
+The full MeshVTON 3D pipeline requires **three types of data**:
 
 ---
 
-### 1.2 — 3D Giysi Mesh'leri
+### 1.1 — Person Images (2D)
 
-| Kaynak | İndirme | Format | Not |
-|--------|---------|--------|-----|
-| **CLOTH3D** | [cloth3d.github.io](https://chalearnlap.cvc.uab.cat/dataset/38/description/) | OBJ | Sentetik, SMPL uyumlu |
-| **Deep Fashion3D** | [GitHub](https://github.com/kv2000/DeepFashion3D) | OBJ/PLY | Gerçek taranmış |
-| **ClothesNet** | [clothesnet.github.io](https://clothesnet.github.io/) | OBJ | 3000+ giysi |
-| **Sketchfab** | [sketchfab.com](https://sketchfab.com/search?q=clothing&type=models) | GLB/OBJ | Ücretsiz modeller mevcut |
-| **TurboSquid** | [turbosquid.com](https://www.turbosquid.com/Search/3D-Models/free/clothing) | OBJ/FBX | Ücretsiz/ücretli |
-| **CGTrader** | [cgtrader.com](https://www.cgtrader.com/free-3d-models/clothes) | OBJ | Ücretsiz modeller |
+Person images from any virtual try-on dataset:
 
-**En iyi başlangıç**: **CLOTH3D** — SMPL beden modeli ile uyumlu, etiketlenmiş, sentetik
+| Dataset | Download | Size | Note |
+|---------|----------|------|------|
+| **VITON-HD** | [GitHub](https://github.com/shadow2496/VITON-HD) | ~12 GB | Most common benchmark |
+| **DressCode** | [GitHub](https://github.com/aimagelab/dress-code) | ~50 GB | Upper / Lower / Dress |
+| **DeepFashion** | [mmlab.ie.cuhk.edu.hk](http://mmlab.ie.cuhk.edu.hk/projects/DeepFashion.html) | ~30 GB | Large-scale |
 
----
-
-### 1.3 — SMPL-X Beden Modeli
-
-| Dosya | İndirme | Not |
-|-------|---------|-----|
-| **SMPL-X model** | [smpl-x.is.tue.mpg.de](https://smpl-x.is.tue.mpg.de/) | Kayıt gerekli (akademik) |
-| Gerekli dosyalar | `SMPLX_NEUTRAL.npz`, `SMPLX_MALE.npz`, `SMPLX_FEMALE.npz` | ~300 MB |
-
-**Adım**: smpl-x.is.tue.mpg.de → Register → Download SMPL-X → `SMPLX_*.npz` dosyalarını al
+**Steps**: Go to the dataset's web page → fill the academic-use form → obtain the download link.
 
 ---
 
-## 📁 2. Dosya Yerleşimi
+### 1.2 — 3D Garment Meshes
 
-İndirdiğin dosyaları aşağıdaki yapıya göre yerleştir:
+| Source | Download | Format | Note |
+|--------|----------|--------|------|
+| **CLOTH3D** | [cloth3d.github.io](https://chalearnlap.cvc.uab.cat/dataset/38/description/) | OBJ | Synthetic, SMPL-compatible |
+| **Deep Fashion3D** | [GitHub](https://github.com/kv2000/DeepFashion3D) | OBJ/PLY | Real scanned |
+| **ClothesNet** | [clothesnet.github.io](https://clothesnet.github.io/) | OBJ | 3000+ garments |
+| **Sketchfab** | [sketchfab.com](https://sketchfab.com/search?q=clothing&type=models) | GLB/OBJ | Free models available |
+| **TurboSquid** | [turbosquid.com](https://www.turbosquid.com/Search/3D-Models/free/clothing) | OBJ/FBX | Free / paid |
+| **CGTrader** | [cgtrader.com](https://www.cgtrader.com/free-3d-models/clothes) | OBJ | Free models |
+
+**Best starting point**: **CLOTH3D** — synthetic, labeled, and compatible with the SMPL body model.
+
+---
+
+### 1.3 — SMPL-X Body Model
+
+| File | Download | Note |
+|------|----------|------|
+| **SMPL-X model** | [smpl-x.is.tue.mpg.de](https://smpl-x.is.tue.mpg.de/) | Registration required (academic) |
+| Required files | `SMPLX_NEUTRAL.npz`, `SMPLX_MALE.npz`, `SMPLX_FEMALE.npz` | ~300 MB |
+
+**Steps**: smpl-x.is.tue.mpg.de → register → Download SMPL-X → grab the `SMPLX_*.npz` files.
+
+---
+
+## 2. File Layout
+
+Place the downloaded files following this structure:
 
 ```
 MeshVTON/
 ├── checkpoints/
 │   └── pretrained/
-│       └── smplx/                          ← SMPL-X MODEL DOSYALARI
-│           ├── SMPLX_NEUTRAL.npz           ← İndir: smpl-x.is.tue.mpg.de
+│       └── smplx/                          ← SMPL-X MODEL FILES
+│           ├── SMPLX_NEUTRAL.npz           ← Download from smpl-x.is.tue.mpg.de
 │           ├── SMPLX_MALE.npz
 │           └── SMPLX_FEMALE.npz
 │
 ├── data/
 │   ├── raw/
-│   │   ├── images/                         ← KİŞİ GÖRÜNTÜLERİ (2D)
-│   │   │   ├── 00001_00.jpg                   VITON-HD'den
+│   │   ├── images/                         ← PERSON IMAGES (2D)
+│   │   │   ├── 00001_00.jpg                   from VITON-HD
 │   │   │   ├── 00002_00.jpg
 │   │   │   └── ...
-│   │   ├── train_pairs.csv                 ← EĞİTİM ÇİFTLERİ
+│   │   ├── train_pairs.csv                 ← TRAINING PAIRS
 │   │   ├── val_pairs.csv
 │   │   └── test_pairs.csv
 │   │
-│   ├── garments_3d/                        ← 3D GİYSİ MESH'LERİ
+│   ├── garments_3d/                        ← 3D GARMENT MESHES
 │   │   ├── upper_body/
 │   │   │   ├── tshirt_001/
-│   │   │   │   ├── mesh.obj                   3D geometri
-│   │   │   │   ├── texture.png                UV doku haritası
-│   │   │   │   └── metadata.json              Kategori ve malzeme bilgisi
+│   │   │   │   ├── mesh.obj                   3D geometry
+│   │   │   │   ├── texture.png                UV texture map
+│   │   │   │   └── metadata.json              Category and material info
 │   │   │   ├── shirt_002/
 │   │   │   │   ├── mesh.obj
 │   │   │   │   └── texture.png
@@ -89,23 +89,22 @@ MeshVTON/
 │   │   └── outerwear/
 │   │       └── ...
 │   │
-│   └── processed/                          ← OTOMATİK ÜRETİLİR
-│       ├── poses/                             Poz keypoints
-│       ├── segments/                          Segmentasyon
-│       ├── densepose/                         IUV haritaları
-│       ├── agnostic/                          Agnostik maskeler
-│       ├── smplx_params/                      SMPL-X beden parametreleri
-│       ├── smplx_meshes/                      SMPL-X beden mesh'leri (.obj)
-│       ├── renders_3d/                        Render edilmiş giysi görüntüleri
-│       ├── normal_maps/                       Normal haritaları
-│       └── depth_maps/                        Derinlik haritaları
+│   └── processed/                          ← AUTO-GENERATED
+│       ├── poses/                             pose keypoints
+│       ├── segments/                          body segmentation
+│       ├── agnostic/                          agnostic masks
+│       ├── smplx_params/                      SMPL-X body parameters
+│       ├── smplx_meshes/                      SMPL-X body meshes (.obj)
+│       ├── renders_3d/                        rendered garment images
+│       ├── normal_maps/                       normal maps
+│       └── depth_maps/                        depth maps
 ```
 
 ---
 
-## 📋 3. CSV Dosya Formatı
+## 3. CSV File Format
 
-`train_pairs.csv` dosyası kişi ve 3D giysi mesh'ini eşleştirir:
+The `train_pairs.csv` file pairs persons with 3D garment meshes:
 
 ```csv
 person_id,garment_id
@@ -116,14 +115,14 @@ person_id,garment_id
 ...
 ```
 
-- **person_id**: `data/raw/images/` altındaki dosya adı (uzantısız)  
-- **garment_id**: `data/garments_3d/*/` altındaki klasör adı
+- **person_id**: filename (without extension) under `data/raw/images/`
+- **garment_id**: folder name under `data/garments_3d/*/`
 
 ---
 
-## 📋 4. Giysi Metadata Formatı
+## 4. Garment Metadata Format
 
-Her giysi klasöründe `metadata.json`:
+Each garment folder contains a `metadata.json`:
 
 ```json
 {
@@ -151,15 +150,15 @@ Her giysi klasöründe `metadata.json`:
 
 ---
 
-## 🚀 5. Ön-İşleme Komutları
+## 5. Preprocessing Commands
 
-İndirmeleri yerleştirdikten sonra tüm ön-işlemeyi çalıştır:
+Once the downloads are in place, run the full preprocessing chain:
 
 ```bash
-# 1. Tüm 2D ön-işleme (poz, segmentasyon, DensePose, agnostik)
-python scripts/preprocess_dataset.py --steps pose segment densepose agnostic
+# 1. 2D preprocessing — pose, segmentation, agnostic mask
+python scripts/preprocess_dataset.py --steps pose segment agnostic
 
-# 2. SMPL-X beden parametreleri çıkar (YENİ — 3D)
+# 2. Extract SMPL-X body parameters (3D)
 python src/data/preprocessing/extract_smplx.py \
     --image_dir data/raw/images \
     --output_dir data/processed/smplx_params \
@@ -167,7 +166,7 @@ python src/data/preprocessing/extract_smplx.py \
     --mesh_dir data/processed/smplx_meshes \
     --save_mesh
 
-# 3. 3D giysileri render et (YENİ — 3D)
+# 3. Render 3D garments (3D)
 python src/data/preprocessing/render_garment.py \
     --garments_dir data/garments_3d \
     --smplx_params_dir data/processed/smplx_params \
@@ -179,37 +178,37 @@ python src/data/preprocessing/render_garment.py \
 
 ---
 
-## ⚙️ 6. Gerekli Kütüphaneler (3D Bağımlılıklar)
+## 6. Required Libraries (3D Dependencies)
 
 ```bash
-# 3D pipeline için ek paketler
+# Extra packages for the 3D pipeline
 pip install smplx trimesh pytorch3d
 
-# PyTorch3D CUDA derleme gerektirebilir:
+# PyTorch3D may require CUDA compilation:
 pip install "git+https://github.com/facebookresearch/pytorch3d.git"
 ```
 
 ---
 
-## 🔍 7. Minimum Başlangıç Veri Seti
+## 7. Minimum Starter Dataset
 
-Hızlı test için minimum gereksinim:
+Minimum requirements for a quick test:
 
-| Bileşen | Minimum | Önerilen |
-|---------|---------|----------|
-| Kişi görüntüleri | 10 | 1000+ |
-| 3D giysi mesh'leri | 3 | 50+ |
-| SMPL-X model | 1 (neutral) | 3 (neutral+male+female) |
+| Component | Minimum | Recommended |
+|-----------|---------|-------------|
+| Person images | 10 | 1000+ |
+| 3D garment meshes | 3 | 50+ |
+| SMPL-X model | 1 (neutral) | 3 (neutral + male + female) |
 
 ---
 
-## ❓ Sık Sorulan Sorular
+## FAQ
 
-**S: 3D mesh'im UV haritası içermiyor, sorun olur mu?**  
-C: Hayır, sistem otomatik olarak vertex coloring'e düşer. Ancak UV doku daha iyi sonuç verir.
+**Q: My 3D mesh has no UV map — is that a problem?**
+A: No, the system falls back to vertex coloring automatically. UV textures produce better results though.
 
-**S: Kendi 3D modelimi oluşturabilir miyim?**  
-C: Evet! Blender, CLO3D veya Marvelous Designer ile giysi modeli oluşturup OBJ olarak export edebilirsin.
+**Q: Can I create my own 3D models?**
+A: Yes! You can build garment models in Blender, CLO3D, or Marvelous Designer and export to OBJ.
 
-**S: SMPL-X olmadan çalışır mı?**  
-C: Sistem placeholder mesh kullanır ama sonuçlar kötü olur. SMPL-X indirmek şiddetle tavsiye edilir.
+**Q: Will it work without SMPL-X?**
+A: The system uses a placeholder mesh, but the results will be poor. Downloading SMPL-X is strongly recommended.
