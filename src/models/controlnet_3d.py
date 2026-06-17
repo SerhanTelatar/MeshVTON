@@ -114,7 +114,11 @@ class ControlNet3D(nn.Module):
         self,
         conditioning_channels: int = 9,
         base_channels: int = 320,
-        channel_mult: tuple[int, ...] = (1, 2, 4, 4),
+        # SDXL UNet has 3 down levels (320→640→1280) with 2 downsamples and
+        # the mid block at latent/4 (16×16 for a 512px image). channel_mult
+        # must mirror this so the residuals line up; an extra level would put
+        # the mid residual at 8×8 and mismatch `mid_block_additional_residual`.
+        channel_mult: tuple[int, ...] = (1, 2, 4),
         num_res_blocks: int = 2,
         time_emb_dim: int = 1280,
     ):
