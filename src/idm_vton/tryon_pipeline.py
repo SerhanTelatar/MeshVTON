@@ -1297,6 +1297,8 @@ class StableDiffusionXLInpaintPipeline(
         pooled_prompt_embeds_c=None,
         callback_on_step_end: Optional[Callable[[int, int, Dict], None]] = None,
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
+        controlnet_3d=None,
+        conditioning_3d=None,
         **kwargs,
     ):
         r"""
@@ -1795,6 +1797,21 @@ class StableDiffusionXLInpaintPipeline(
                 if self.do_classifier_free_guidance:
                     reference_features = [torch.cat([torch.zeros_like(d), d]) for d in reference_features]
 
+                # MeshVTON: 3D ControlNet residual injection.
+                # controlnet_3d(conditioning_3d, t) -> [9 down residuals, 1 mid residual]
+                # matching the SDXL UNet's down_block_res_samples + mid block.
+                down_block_res = None
+                mid_block_res = None
+                if controlnet_3d is not None and conditioning_3d is not None:
+                    cn_out = controlnet_3d(
+                        conditioning_3d.to(latent_model_input.dtype),
+                        t.expand(conditioning_3d.shape[0]),
+                    )
+                    if self.do_classifier_free_guidance:
+                        cn_out = [torch.cat([torch.zeros_like(r), r]) for r in cn_out]
+                    cn_out = [r.to(latent_model_input.dtype) for r in cn_out]
+                    down_block_res = cn_out[:-1]
+                    mid_block_res = cn_out[-1]
 
                 noise_pred = self.unet(
                     latent_model_input,
@@ -1803,6 +1820,8 @@ class StableDiffusionXLInpaintPipeline(
                     timestep_cond=timestep_cond,
                     cross_attention_kwargs=self.cross_attention_kwargs,
                     added_cond_kwargs=added_cond_kwargs,
+                    down_block_additional_residuals=down_block_res,
+                    mid_block_additional_residual=mid_block_res,
                     return_dict=False,
                     garment_features=reference_features,
                 )[0]
