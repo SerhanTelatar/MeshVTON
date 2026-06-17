@@ -62,21 +62,24 @@ class PoseEstimator:
             self._load_mediapipe()
 
     def _load_dwpose(self):
-        """Load DWPose model (onnxruntime-based)."""
+        """Load DWPose model (needs mmcv/mmpose/mmdet). Falls back to OpenPose."""
         try:
             from controlnet_aux import DWposeDetector
             self.model = DWposeDetector()
-        except ImportError:
-            print("Warning: DWPose not available. Install controlnet_aux.")
-            self.model = None
+        except Exception as e:
+            # DWPose needs mmdet/mmpose/mmcv; if missing it raises NameError, not
+            # ImportError. Fall back to OpenPose (no mmdet dependency).
+            print(f"Warning: DWPose unavailable ({e}); falling back to OpenPose.")
+            self._load_openpose()
 
     def _load_openpose(self):
         """Load OpenPose model."""
         try:
             from controlnet_aux import OpenposeDetector
             self.model = OpenposeDetector.from_pretrained("lllyasviel/Annotators")
-        except ImportError:
-            print("Warning: OpenPose not available.")
+            self.model_type = "openpose"
+        except Exception as e:
+            print(f"Warning: OpenPose unavailable ({e}); using dummy pose.")
             self.model = None
 
     def _load_mediapipe(self):
@@ -86,8 +89,8 @@ class PoseEstimator:
             self.model = mp.solutions.pose.Pose(
                 static_image_mode=True, model_complexity=2, min_detection_confidence=0.5,
             )
-        except ImportError:
-            print("Warning: MediaPipe not available.")
+        except Exception as e:
+            print(f"Warning: MediaPipe unavailable ({e}); using dummy pose.")
             self.model = None
 
     def estimate(self, image: np.ndarray) -> dict:
