@@ -97,6 +97,11 @@ class GarmentDraper(nn.Module):
     def _geometric_align(self, garment_verts: torch.Tensor,
                          body_verts: torch.Tensor) -> torch.Tensor:
         """Rigidly scale+center the garment onto the body (no learned deform)."""
+        # CLOTH3D meshes are Z-up; SMPL-X / the camera are Y-up. Rotate -90deg
+        # about X so the garment stands upright facing the camera: (x,y,z)->(x,z,-y).
+        gv = garment_verts
+        garment_verts = torch.stack([gv[..., 0], gv[..., 2], -gv[..., 1]], dim=-1)
+
         g_min = garment_verts.amin(dim=1, keepdim=True)
         g_max = garment_verts.amax(dim=1, keepdim=True)
         b_min = body_verts.amin(dim=1, keepdim=True)
