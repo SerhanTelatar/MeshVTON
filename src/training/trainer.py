@@ -200,12 +200,14 @@ class Trainer:
         for batch in tqdm(self.val_loader, desc="Validation"):
             batch = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v
                      for k, v in batch.items()}
-            outputs = self.pipeline(
-                person_image=batch["person_image"],
-                garment_image=batch["garment_image"],
-                agnostic_mask=batch["agnostic_image"],
-                conditioning_3d=batch.get("conditioning_3d"),
-            )
+            with autocast(enabled=self.mixed_precision != "no",
+                          dtype=torch.float16 if self.mixed_precision == "fp16" else torch.bfloat16):
+                outputs = self.pipeline(
+                    person_image=batch["person_image"],
+                    garment_image=batch["garment_image"],
+                    agnostic_mask=batch["agnostic_image"],
+                    conditioning_3d=batch.get("conditioning_3d"),
+                )
             total_loss += outputs["loss"].item()
             num_batches += 1
 
