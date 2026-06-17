@@ -410,8 +410,15 @@ class TryOnPipeline(nn.Module):
     ) -> torch.Tensor:
         """Generate try-on image."""
         device = garment_image.device
-        dtype = garment_image.dtype
+        # Use the model's dtype (VAE/UNet may be fp16) and cast inputs to match,
+        # so inference works without an external autocast context.
+        dtype = next(self.tryon_net.parameters()).dtype
         b = garment_image.shape[0]
+
+        garment_image = garment_image.to(dtype)
+        agnostic_mask = agnostic_mask.to(dtype)
+        if conditioning_3d is not None:
+            conditioning_3d = conditioning_3d.to(dtype)
 
         garment_latent = self._vae_encode(garment_image)
         agnostic_latent = self._vae_encode(agnostic_mask)
