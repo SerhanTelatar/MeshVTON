@@ -435,8 +435,22 @@ class TryOnPipeline(nn.Module):
         h, w = agnostic_latent.shape[2], agnostic_latent.shape[3]
         inpaint_mask = torch.ones(b, 1, h, w, device=device, dtype=dtype)
 
-        # Start from noise
+        # Start from noise (scaled by the scheduler's init sigma)
         latent = torch.randn(b, 4, h, w, generator=generator, device=device, dtype=dtype)
+        latent = latent * self.noise_scheduler.init_noise_sigma
+
+        # SDXL micro-conditioning needs the REAL image size, not zeros, otherwise
+        # the model is pushed out of distribution and the output collapses to noise.
+        size_h, size_w = h * 8, w * 8
+        add_time_ids = torch.tensor(
+            [[size_h, size_w, 0, 0, size_h, size_w]], device=device, dtype=dtype
+        ).repeat(b, 1)
+
+        # Classifier-free guidance: uncond branch = empty text + zero image features
+        do_cfg = guidance_scale is not None and guidance_scale > 1.0
+        if do_cfg:
+            uncond_prompt, uncond_pooled = self._encode_text("", b)
+            uncond_ip = torch.zeros_like(ip_features)
 
         # DDIM loop
         self.noise_scheduler.set_timesteps(num_inference_steps)
@@ -453,22 +467,31 @@ class TryOnPipeline(nn.Module):
                 latent, agnostic_latent, inpaint_mask, garment_latent
             ], dim=1)
 
-            add_time_ids = torch.zeros(b, 6, device=device, dtype=dtype)
-            added_cond_kwargs = {
-                "text_embeds": pooled_prompt_embeds,
-                "time_ids": add_time_ids,
-            }
-
-            noise_pred = self._tryon_forward(
+            noise_cond = self._tryon_forward(
                 model_input=model_input,
                 timesteps=t_batch,
                 encoder_hidden_states=prompt_embeds,
                 ip_features=ip_features,
                 garment_down_features=garment_down_features,
                 garment_ref_features=garment_ref_features,
-                added_cond_kwargs=added_cond_kwargs,
+                added_cond_kwargs={"text_embeds": pooled_prompt_embeds, "time_ids": add_time_ids},
                 controlnet_residuals=controlnet_residuals,
             )
+
+            if do_cfg:
+                noise_uncond = self._tryon_forward(
+                    model_input=model_input,
+                    timesteps=t_batch,
+                    encoder_hidden_states=uncond_prompt,
+                    ip_features=uncond_ip,
+                    garment_down_features=garment_down_features,
+                    garment_ref_features=garment_ref_features,
+                    added_cond_kwargs={"text_embeds": uncond_pooled, "time_ids": add_time_ids},
+                    controlnet_residuals=controlnet_residuals,
+                )
+                noise_pred = noise_uncond + guidance_scale * (noise_cond - noise_uncond)
+            else:
+                noise_pred = noise_cond
 
             step_out = self.noise_scheduler.step(noise_pred, t, latent)
             latent = step_out.prev_sample
