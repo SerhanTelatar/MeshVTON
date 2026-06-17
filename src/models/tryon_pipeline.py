@@ -614,6 +614,15 @@ class TryOnPipeline(nn.Module):
           - mid_block_additional_residual: ControlNet mid block
           - garment_features: from GarmentNet for self-attention fusion
         """
+        # IDM-VTON's TryonNet has encoder_hid_dim_type == "ip_image_proj":
+        # it concatenates added_cond_kwargs["image_embeds"] onto encoder_hidden_states.
+        # ip_features are already projected (Resampler output, dim == cross_attention_dim).
+        added_cond_kwargs = dict(added_cond_kwargs)
+        if ip_features is not None:
+            added_cond_kwargs["image_embeds"] = ip_features.to(
+                next(self.tryon_net.parameters()).dtype
+            )
+
         try:
             kwargs = {
                 "added_cond_kwargs": added_cond_kwargs,
