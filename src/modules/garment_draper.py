@@ -81,36 +81,35 @@ class GarmentDraper(nn.Module):
                 'offsets': (B, Vg, 3) refinement offsets
                 'normals': (B, Vg, 3) surface normals
         """
-        b, vg, _ = garment_verts.shape
-
-        # 1. Coarse draping: deform based on the nearest body point
-        coarse_verts = self._coarse_drape(garment_verts, body_verts)
-
-        # 2. Encode material properties
-        if material_params is not None:
-            mat_feat = self.material_mlp(material_params)  # (B, feat_dim)
-            mat_feat = mat_feat.unsqueeze(1).expand(-1, vg, -1)  # (B, Vg, feat_dim)
-        else:
-            mat_feat = torch.zeros(b, vg, 256, device=garment_verts.device)
-
-        # 3. Fine draping: detail refinement
-        x = torch.cat([coarse_verts, mat_feat], dim=-1)
-        for layer in self.refine_layers:
-            x = layer(x)
-        offsets = x  # (B, Vg, 3) — fine deformation offsets
-
-        # Collision avoidance: keep garment outside the body mesh
-        draped_verts = coarse_verts + offsets * 0.05  # small-scale offset
-        draped_verts = self._collision_handling(draped_verts, body_verts)
-
-        # Compute normals
+        # Geometric alignment: scale + translate the garment so its bounding box
+        # matches the body's, preserving the garment's own shape. (The learned
+        # draping nets here are untrained and collapse the mesh into a blob, so
+        # we use a robust rigid alignment instead.)
+        draped_verts = self._geometric_align(garment_verts, body_verts)
         normals = self._compute_normals(draped_verts, garment_faces)
 
         return {
             "draped_verts": draped_verts,
-            "offsets": offsets,
+            "offsets": torch.zeros_like(draped_verts),
             "normals": normals,
         }
+
+    def _geometric_align(self, garment_verts: torch.Tensor,
+                         body_verts: torch.Tensor) -> torch.Tensor:
+        """Rigidly scale+center the garment onto the body (no learned deform)."""
+        g_min = garment_verts.amin(dim=1, keepdim=True)
+        g_max = garment_verts.amax(dim=1, keepdim=True)
+        b_min = body_verts.amin(dim=1, keepdim=True)
+        b_max = body_verts.amax(dim=1, keepdim=True)
+
+        g_center = (g_min + g_max) / 2
+        g_size = (g_max - g_min).amax(dim=-1, keepdim=True).clamp(min=1e-6)
+        b_size = (b_max - b_min).amax(dim=-1, keepdim=True)
+
+        # Only the garment is rendered and the camera looks at the origin, so
+        # center the garment at the origin and scale it to the body's size.
+        scale = b_size / g_size  # uniform, preserves garment proportions
+        return (garment_verts - g_center) * scale
 
     def _coarse_drape(self, garment_verts: torch.Tensor,
                       body_verts: torch.Tensor) -> torch.Tensor:
