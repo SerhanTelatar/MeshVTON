@@ -154,6 +154,10 @@ def render_garments(garments_dir: str, smplx_params_dir: str, output_dir: str,
             rendered += 1
 
         except Exception as e:
+            if skipped < 3:
+                import traceback
+                print(f"\n[render fail] {output_name}: {e}")
+                traceback.print_exc()
             skipped += 1
             continue
 
