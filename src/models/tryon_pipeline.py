@@ -499,8 +499,22 @@ class TryOnPipeline(nn.Module):
             return torch.zeros(b, 16, cross_attn_dim,
                              device=garment_image.device, dtype=garment_image.dtype)
 
-        # CLIP vision encoding
-        clip_output = self.image_encoder(garment_image)
+        # Preprocess for CLIP: garment_image is [-1,1] at training resolution,
+        # but the CLIP vision encoder expects 224x224 inputs normalized with
+        # CLIP's own mean/std (otherwise the position embeddings mismatch).
+        import torch.nn.functional as F
+        clip_in = (garment_image.float() + 1.0) / 2.0          # [-1,1] -> [0,1]
+        clip_in = F.interpolate(clip_in, size=(224, 224),
+                                mode="bicubic", align_corners=False)
+        mean = torch.tensor([0.48145466, 0.4578275, 0.40821073],
+                            device=clip_in.device).view(1, 3, 1, 1)
+        std = torch.tensor([0.26862954, 0.26130258, 0.27577711],
+                           device=clip_in.device).view(1, 3, 1, 1)
+        clip_in = (clip_in - mean) / std
+        clip_in = clip_in.to(next(self.image_encoder.parameters()).dtype)
+
+        # CLIP vision encoding (need hidden states for IP-Adapter Plus resampler)
+        clip_output = self.image_encoder(clip_in, output_hidden_states=True)
         clip_features = clip_output.hidden_states[-2]  # penultimate layer
 
         # Project through IP-Adapter Resampler
