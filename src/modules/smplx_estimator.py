@@ -167,13 +167,14 @@ class SMPLXEstimator:
         global_orient = torch.tensor(params["global_orient"], dtype=torch.float32).unsqueeze(0).to(self.device)
 
         if self.smplx_model is not None:
-            output = self.smplx_model(
-                betas=betas, body_pose=body_pose, global_orient=global_orient,
-            )
+            with torch.no_grad():
+                output = self.smplx_model(
+                    betas=betas, body_pose=body_pose, global_orient=global_orient,
+                )
             return {
-                "vertices": output.vertices.cpu().numpy().squeeze(),
+                "vertices": output.vertices.detach().cpu().numpy().squeeze(),
                 "faces": self.smplx_model.faces.copy(),
-                "joints": output.joints.cpu().numpy().squeeze(),
+                "joints": output.joints.detach().cpu().numpy().squeeze(),
             }
         return {"vertices": np.zeros((10475, 3)), "faces": np.zeros((20908, 3), dtype=np.int64),
                 "joints": np.zeros((127, 3))}
