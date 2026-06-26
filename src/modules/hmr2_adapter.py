@@ -25,12 +25,19 @@ def _patch_torch_load_weights_only(torch):
     """
     if getattr(torch.load, "_wo_patched", False):
         return
+    # FORCE (not setdefault): PyTorch-Lightning / 4D-Humans may pass
+    # weights_only=True explicitly, which setdefault would NOT override.
     _orig = torch.load
     def _load(*a, **k):
-        k.setdefault("weights_only", False)
+        k["weights_only"] = False
         return _orig(*a, **k)
     _load._wo_patched = True
     torch.load = _load
+    try:
+        import torch.serialization
+        torch.serialization.add_safe_globals([dict, list, set, tuple, bytes])
+    except Exception:
+        pass
 
 
 def build_hmr2_regressor(device: str = "cuda", model_path: str = None):
