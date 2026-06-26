@@ -158,9 +158,15 @@ class MeshRenderer:
         return torch.ones(batch_size, 4, self.image_size, self.image_size,
                           device=self.device) * 0.5
 
-    def render_normal_map(self, vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
-        """Render a normal map (for geometry conditioning)."""
+    def render_normal_map(self, vertices: torch.Tensor, faces: torch.Tensor,
+                          camera_params: Optional[dict] = None) -> torch.Tensor:
+        """Render a normal map (for geometry conditioning).
+
+        `camera_params` (with `azim`) must match the RGB render so the 9-channel
+        conditioning stays geometrically consistent across views.
+        """
         b = vertices.shape[0]
+        faces_in = faces  # keep original (F,3) for self.render below
         if faces.dim() == 2:
             faces = faces.unsqueeze(0).expand(b, -1, -1)
 
@@ -184,16 +190,42 @@ class MeshRenderer:
 
         # Render normals as colors
         normal_colors = (vertex_normals + 1) / 2  # [-1,1] → [0,1]
-        return self.render(vertices, faces[0] if faces.dim() == 3 else faces, normal_colors)
+        return self.render(vertices, faces_in, normal_colors, camera_params)
 
-    def render_depth_map(self, vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
-        """Render a depth map."""
-        z_values = vertices[:, :, 2:3]  # z coordinate
-        z_min = z_values.min(dim=1, keepdim=True)[0]
-        z_max = z_values.max(dim=1, keepdim=True)[0]
-        depth_normalized = (z_values - z_min) / (z_max - z_min + 1e-8)
+    def render_depth_map(self, vertices: torch.Tensor, faces: torch.Tensor,
+                         camera_params: Optional[dict] = None) -> torch.Tensor:
+        """Render a depth map.
+
+        Depth is measured along the camera's view axis (camera-space z) so it
+        stays correct when `camera_params` rotates the camera (e.g. azim=180 for
+        a back-facing person). At azim=0 this matches the original world-z depth.
+        """
+        depth_z = self._camera_space_depth(vertices, camera_params)  # (B, V, 1)
+        d_min = depth_z.min(dim=1, keepdim=True)[0]
+        d_max = depth_z.max(dim=1, keepdim=True)[0]
+        depth_normalized = (depth_z - d_min) / (d_max - d_min + 1e-8)
         depth_colors = depth_normalized.expand(-1, -1, 3)
-        return self.render(vertices, faces, depth_colors)
+        return self.render(vertices, faces, depth_colors, camera_params)
+
+    def _camera_space_depth(self, vertices: torch.Tensor,
+                            camera_params: Optional[dict] = None) -> torch.Tensor:
+        """Per-vertex depth along the camera view axis → (B, V, 1).
+
+        Falls back to world-z (the original behavior) if PyTorch3D is missing.
+        """
+        try:
+            from pytorch3d.renderer import look_at_view_transform, FoVPerspectiveCameras
+            cp = camera_params or {}
+            R, T = look_at_view_transform(
+                dist=cp.get("dist", 2.7),
+                elev=cp.get("elev", 0),
+                azim=cp.get("azim", 0),
+            )
+            cameras = FoVPerspectiveCameras(device=vertices.device, R=R, T=T)
+            view_pts = cameras.get_world_to_view_transform().transform_points(vertices)
+            return view_pts[..., 2:3]  # camera-space z = depth toward camera
+        except Exception:
+            return vertices[:, :, 2:3]
 
     def render_multiview(self, vertices: torch.Tensor, faces: torch.Tensor,
                          textures: Optional[torch.Tensor] = None,

@@ -194,6 +194,123 @@ class SMPLXEstimator:
         return {k: data[k] for k in data.files}
 
 
+class RealSMPLXEstimator(SMPLXEstimator):
+    """
+    SMPL-X estimator backed by a *real* image→SMPL-X regressor (PyMAF-X by
+    default), conforming to the exact same contract as `SMPLXEstimator`
+    (`estimate()` / `get_body_mesh()` return identical keys).
+
+    Why this exists: the base `SMPLXEstimator` silently falls back to the
+    untrained `SimpleSMPLXRegressor`, whose `global_orient` is meaningless. That
+    is the root cause of garments never following the person's front/back/side
+    orientation. This class instead runs a real regressor and — crucially —
+    **raises** if the backend is unavailable rather than silently producing a
+    wrong pose.
+
+    The PyMAF-X specifics live in a single injectable `regress_fn(image_rgb,
+    bbox) -> dict` seam so the heavy integration can be finalized/validated on
+    Colab (where the PyMAF-X repo + weights live) without touching the rest of
+    the pipeline. `regress_fn` must return at least:
+        betas (10,), body_pose (63,), global_orient (3,), transl (3,)
+    all as numpy arrays in SMPL-X convention.
+    """
+
+    def __init__(self, *args, regress_fn=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._regress_fn = regress_fn
+        self._backend_ready = False
+
+    def _load_regressor(self):
+        """Load the real regressor backend (no untrained fallback)."""
+        if self._regress_fn is not None:
+            self._backend_ready = True
+            return
+        if self.regressor == "hmr2":
+            from src.modules.hmr2_adapter import build_hmr2_regressor
+            self._regress_fn = build_hmr2_regressor(self.device, str(self.model_path))
+        elif self.regressor == "pymaf":
+            self._regress_fn = self._build_pymafx_regressor()
+        elif self.regressor == "expose":
+            self._regress_fn = self._build_expose_regressor()
+        else:
+            raise ValueError(
+                f"RealSMPLXEstimator does not support regressor='{self.regressor}'. "
+                "Use 'hmr2'/'pymaf'/'expose', or pass regress_fn=..."
+            )
+        self._backend_ready = True
+
+    def _build_pymafx_regressor(self):
+        """Construct a PyMAF-X-backed regression callable.
+
+        Imports PyMAF-X lazily from an installed package or a repo on sys.path.
+        Raises a clear error (instead of a silent wrong fallback) if unavailable,
+        so the caller knows real pose estimation is not wired yet.
+        """
+        try:
+            # PyMAF-X official API. On Colab, clone https://github.com/HongwenZhang/PyMAF-X
+            # add it to sys.path, and download the SMPL-X + PyMAF-X checkpoints.
+            from pymafx_runner import build_pymafx_demo  # thin user-side adapter on Colab
+        except Exception as e:
+            raise RuntimeError(
+                "PyMAF-X backend not available. Install/clone PyMAF-X on Colab and "
+                "provide a `pymafx_runner.build_pymafx_demo()` adapter (or pass "
+                "regress_fn=...). Refusing to fall back to the untrained regressor, "
+                "which produces a meaningless global_orient. Original error: " + repr(e)
+            )
+        return build_pymafx_demo(device=self.device, model_path=str(self.model_path))
+
+    def _build_expose_regressor(self):
+        try:
+            from expose_runner import build_expose_demo
+        except Exception as e:
+            raise RuntimeError(
+                "ExPose backend not available. Provide an `expose_runner.build_expose_demo()` "
+                "adapter or pass regress_fn=... Original error: " + repr(e)
+            )
+        return build_expose_demo(device=self.device, model_path=str(self.model_path))
+
+    @staticmethod
+    def _person_bbox(image_rgb: np.ndarray) -> tuple:
+        """Coarse person bbox (full frame). PyMAF-X is robust to a loose bbox;
+        replace with a detector on Colab if tighter crops are needed."""
+        h, w = image_rgb.shape[:2]
+        return (0, 0, w, h)
+
+    @torch.no_grad()
+    def estimate(self, image: np.ndarray) -> dict:
+        """Estimate SMPL-X params from a BGR image using the real backend.
+
+        Returns the same dict contract as `SMPLXEstimator.estimate`.
+        """
+        if self.smplx_model is None:
+            self._load_smplx()
+        if not self._backend_ready:
+            self._load_regressor()
+
+        import cv2
+        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        bbox = self._person_bbox(image_rgb)
+
+        params = self._regress_fn(image_rgb, bbox)  # numpy arrays, SMPL-X convention
+        for k in ("betas", "body_pose", "global_orient", "transl"):
+            if k not in params:
+                raise KeyError(f"regress_fn output missing required key '{k}'")
+
+        result = {
+            "betas": np.asarray(params["betas"], dtype=np.float32).reshape(-1)[:SMPLX_NUM_BETAS],
+            "body_pose": np.asarray(params["body_pose"], dtype=np.float32).reshape(-1)[:SMPLX_NUM_BODY_JOINTS * 3],
+            "global_orient": np.asarray(params["global_orient"], dtype=np.float32).reshape(-1)[:3],
+            "transl": np.asarray(params["transl"], dtype=np.float32).reshape(-1)[:3],
+        }
+
+        # Build the mesh from the regressed params via the loaded SMPL-X model.
+        mesh = self.get_body_mesh(result)
+        result["vertices"] = mesh["vertices"]
+        result["joints"] = mesh["joints"]
+        result["faces"] = mesh["faces"]
+        return result
+
+
 class SimpleSMPLXRegressor(nn.Module):
     """
     Simple CNN → SMPL-X parameter regressor.

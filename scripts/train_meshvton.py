@@ -71,6 +71,7 @@ def main():
     ap.add_argument("--batch_size", type=int, default=2)
     ap.add_argument("--epochs", type=int, default=5)
     ap.add_argument("--lr", type=float, default=1e-4)
+    ap.add_argument("--warmup_ratio", type=float, default=0.05, help="fraction of steps for LR warmup")
     ap.add_argument("--subset", type=float, default=1.0, help="fraction of dataset")
     ap.add_argument("--num_workers", type=int, default=2)
     ap.add_argument("--save_dir", default="checkpoints/meshvton")
@@ -120,6 +121,12 @@ def main():
                         num_workers=args.num_workers, drop_last=True, pin_memory=True)
 
     opt = torch.optim.AdamW(controlnet.parameters(), lr=args.lr)
+    from diffusers.optimization import get_cosine_schedule_with_warmup
+    total_steps = len(loader) * args.epochs
+    warmup_steps = max(1, int(total_steps * args.warmup_ratio))
+    lr_sched = get_cosine_schedule_with_warmup(
+        opt, num_warmup_steps=warmup_steps, num_training_steps=total_steps)
+    print(f"LR schedule: cosine + warmup ({warmup_steps}/{total_steps} steps)")
     save_dir = Path(args.save_dir); save_dir.mkdir(parents=True, exist_ok=True)
     num_train_t = pipe.scheduler.config.num_train_timesteps
 
@@ -181,9 +188,11 @@ def main():
             loss.backward()
             torch.nn.utils.clip_grad_norm_(controlnet.parameters(), 1.0)
             opt.step()
+            lr_sched.step()
 
             running += loss.item()
-            pbar.set_postfix(loss=f"{running/(step+1):.4f}")
+            pbar.set_postfix(loss=f"{running/(step+1):.4f}",
+                             lr=f"{lr_sched.get_last_lr()[0]:.2e}")
 
         if (epoch + 1) % args.save_every == 0:
             p = save_dir / f"controlnet3d_epoch{epoch+1}.pt"

@@ -50,8 +50,8 @@ agnostic:
 # --- SMPL-X Body Estimation ---
 smplx:
   enabled: true
-  model_dir: "checkpoints/pretrained/smplx"
-  regressor: "pymaf"          # pymaf, expose, pixie
+  model_dir: "checkpoints/pretrained"   # smplx.create appends /smplx/SMPLX_NEUTRAL.npz
+  regressor: "hmr2"           # hmr2 (4D-Humans), pymaf, expose — REAL pose backend
   gender: "neutral"
   output_dir: "data/processed/smplx_params"
   save_mesh: true             # also save .obj mesh files

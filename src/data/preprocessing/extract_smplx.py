@@ -6,13 +6,20 @@ import numpy as np
 import cv2
 from tqdm import tqdm
 
-from src.modules.smplx_estimator import SMPLXEstimator
+from src.modules.smplx_estimator import SMPLXEstimator, RealSMPLXEstimator
 
 
 def extract_smplx(image_dir: str, output_dir: str, model_dir: str,
                    device: str = "cuda", save_mesh: bool = True,
-                   mesh_dir: str = None):
-    """Extract SMPL-X parameters from every person image in a directory."""
+                   mesh_dir: str = None, regressor: str = "hmr2"):
+    """Extract SMPL-X parameters from every person image in a directory.
+
+    `regressor='hmr2'/'pymaf'/'expose'` uses the real estimator
+    (RealSMPLXEstimator) so global_orient reflects the person's true facing
+    direction — required for the conditioning to match the person, and identical
+    to the backend the inference notebook uses (hmr2). `regressor='simple'` keeps
+    the legacy untrained regressor (NOT recommended; pose is meaningless).
+    """
     img_dir = Path(image_dir)
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -20,7 +27,10 @@ def extract_smplx(image_dir: str, output_dir: str, model_dir: str,
     if save_mesh and mesh_dir:
         Path(mesh_dir).mkdir(parents=True, exist_ok=True)
 
-    estimator = SMPLXEstimator(model_path=model_dir, device=device)
+    if regressor == "simple":
+        estimator = SMPLXEstimator(model_path=model_dir, regressor="simple", device=device)
+    else:
+        estimator = RealSMPLXEstimator(model_path=model_dir, regressor=regressor, device=device)
     estimator.load_model()
 
     extensions = {".jpg", ".jpeg", ".png", ".webp"}
@@ -71,6 +81,9 @@ if __name__ == "__main__":
     parser.add_argument("--mesh_dir", default="data/processed/smplx_meshes")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--save_mesh", action="store_true", default=True)
+    parser.add_argument("--regressor", default="hmr2",
+                        choices=["hmr2", "pymaf", "expose", "simple"],
+                        help="real estimator (hmr2/pymaf/expose) vs legacy untrained (simple)")
     args = parser.parse_args()
     extract_smplx(args.image_dir, args.output_dir, args.model_dir,
-                   args.device, args.save_mesh, args.mesh_dir)
+                   args.device, args.save_mesh, args.mesh_dir, args.regressor)

@@ -66,16 +66,20 @@ class ImageTryOn:
         if self._smplx_estimator is not None:
             return
 
-        from src.modules.smplx_estimator import SMPLXEstimator
+        from src.modules.smplx_estimator import RealSMPLXEstimator
         from src.modules.garment_draper import GarmentDraper
         from src.modules.mesh_renderer import MeshRenderer
 
-        self._smplx_estimator = SMPLXEstimator(device=str(self.device))
+        # Real SMPL-X estimator so global_orient reflects the person's true facing
+        # direction (front/back/side). Falls back loudly (raises) if unavailable —
+        # we never silently use the untrained regressor (that produced wrong poses).
+        self._smplx_estimator = RealSMPLXEstimator(device=str(self.device))
         self._garment_draper = GarmentDraper().to(self.device)
         self._mesh_renderer = MeshRenderer(
             image_size=self.resolution, device=str(self.device)
         )
-        print("3D pipeline initialized: SMPL-X + GarmentDraper + MeshRenderer")
+        self._mesh_renderer.setup()
+        print("3D pipeline initialized: RealSMPL-X + GarmentDraper + MeshRenderer")
 
     @torch.no_grad()
     def run(self, person_image, garment_image,
@@ -140,98 +144,60 @@ class ImageTryOn:
         person_image,
         garment_mesh_path: str,
         output_path: Optional[str] = None,
-        view_angle: float = 0.0,
+        view_angle: Optional[float] = None,
     ) -> Image.Image:
         """
         Run virtual try-on with a 3D garment mesh (NOVEL 3D-aware mode).
 
-        Pipeline:
-          1. Estimate SMPL-X body from person image
-          2. Load 3D garment mesh (.obj)
-          3. Drape garment onto SMPL-X body
-          4. Render draped garment via PyTorch3D → RGB + normal + depth
-          5. Generate try-on via ControlNet3D conditioning
+        The 3D conditioning is built through the shared
+        `src.modules.conditioning3d.build_conditioning_3d` so it is *identical*
+        to what training produced (real SMPL-X pose, camera azimuth from
+        global_orient, textured render, 9-channel rgb+normal+depth). This is the
+        single source of truth — do not render conditioning inline here.
+
+        NOTE: the validated runtime backbone is the real IDM-VTON pipeline used by
+        notebooks/meshvton_inference.ipynb (via src.idm_vton). This method still
+        calls the legacy `self.pipeline.generate`; the conditioning is now correct
+        but the legacy backbone remains abandoned — prefer the notebook path.
 
         Args:
             person_image: Person image (path, numpy, or PIL).
             garment_mesh_path: Path to 3D garment mesh (.obj/.glb/.ply).
             output_path: Optional output save path.
-            view_angle: Camera azimuth angle (0=front, 90=side, 180=back).
+            view_angle: Camera azimuth override (deg). If None, derived from pose.
 
         Returns:
             PIL Image of the 3D-aware try-on result.
         """
         self._init_3d_pipeline()
 
+        from src.modules.conditioning3d import build_conditioning_3d
+
         person_np = self._load_as_numpy(person_image)
 
-        # 1. Estimate SMPL-X body
-        smplx_params = self._smplx_estimator.estimate(person_np)
-
-        # 2. Load 3D garment mesh
-        from src.modules.garment_draper import load_garment_mesh
-        garment_mesh = load_garment_mesh(garment_mesh_path)
-
-        # 3. Drape garment onto body
-        garment_verts = torch.from_numpy(garment_mesh["vertices"]).float().unsqueeze(0).to(self.device)
-        garment_faces = torch.from_numpy(garment_mesh["faces"]).long().to(self.device)
-        body_verts = torch.from_numpy(smplx_params["vertices"]).float().unsqueeze(0).to(self.device)
-        body_faces = torch.from_numpy(smplx_params["faces"]).long().to(self.device)
-
-        draped = self._garment_draper(
-            garment_verts, garment_faces, body_verts, body_faces,
+        # Build conditioning + textured garment render through the shared builder.
+        cond = build_conditioning_3d(
+            person_image=Image.fromarray(person_np[:, :, ::-1]),
+            mesh_path=garment_mesh_path,
+            estimator=self._smplx_estimator,
+            renderer=self._mesh_renderer,
+            draper=self._garment_draper,
+            height=self.resolution,
+            width=self.resolution,
+            view_angle=view_angle,
+            device=str(self.device),
+            dtype=torch.float32,
         )
+        conditioning_3d = cond["conditioning_3d"]
 
-        # 4. Render from specified view angle
-        camera_params = {"dist": 2.7, "elev": 0, "azim": view_angle}
-
-        render_rgb = self._mesh_renderer.render(
-            draped["draped_verts"], garment_faces,
-            camera_params=camera_params,
-        )[:, :3]  # Take RGB only
-
-        normal_map = self._mesh_renderer.render_normal_map(
-            draped["draped_verts"], garment_faces,
-        )[:, :3]
-
-        depth_map = self._mesh_renderer.render_depth_map(
-            draped["draped_verts"], garment_faces,
-        )[:, :3]
-
-        # Resize to model resolution
-        render_rgb = torch.nn.functional.interpolate(
-            render_rgb, size=(self.resolution, self.resolution),
-            mode="bilinear", align_corners=False,
-        )
-        normal_map = torch.nn.functional.interpolate(
-            normal_map, size=(self.resolution, self.resolution),
-            mode="bilinear", align_corners=False,
-        )
-        depth_map = torch.nn.functional.interpolate(
-            depth_map, size=(self.resolution, self.resolution),
-            mode="bilinear", align_corners=False,
-        )
-
-        # 5. Build 3D conditioning tensor
-        conditioning_3d = ControlNet3D.prepare_conditioning(
-            render_rgb, normal_map, depth_map,
-        )
+        # Textured garment render as the 2D garment input for GarmentNet.
+        garment_front = pil_to_tensor(cond["render_rgb"], self.resolution).unsqueeze(0).to(self.device)
 
         # Standard 2D preprocessing
         pose_result = self.pose_estimator.estimate(person_np)
         seg_result = self.segmentation.segment(person_np)
         agnostic_result = self.agnostic_gen.generate(
             person_np, seg_result["segmentation"], pose_result.get("keypoints"),
-        )
-
-        # Use rendered garment as 2D garment input for GarmentNet
-        garment_front = self._mesh_renderer.render(
-            draped["draped_verts"], garment_faces,
-            camera_params={"dist": 2.7, "elev": 0, "azim": 0},
-        )[:, :3]
-        garment_front = torch.nn.functional.interpolate(
-            garment_front, size=(self.resolution, self.resolution),
-            mode="bilinear", align_corners=False,
         )
 
         agnostic_tensor = pil_to_tensor(

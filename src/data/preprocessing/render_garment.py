@@ -15,6 +15,7 @@ from tqdm import tqdm
 from src.modules.mesh_renderer import MeshRenderer
 from src.modules.garment_draper import GarmentDraper, load_garment_mesh
 from src.modules.smplx_estimator import SMPLXEstimator
+from src.modules.conditioning3d import azim_from_global_orient
 
 
 def render_garments(garments_dir: str, smplx_params_dir: str, output_dir: str,
@@ -123,6 +124,13 @@ def render_garments(garments_dir: str, smplx_params_dir: str, output_dir: str,
                 body_mesh["faces"], dtype=torch.long
             ).to(device)
 
+            # Camera azimuth from the person's global orientation so the rendered
+            # garment matches the person's facing direction (front=0, back=180).
+            # MUST mirror src.modules.conditioning3d.build_conditioning_3d so train
+            # and inference conditioning come from the same distribution.
+            cam = {"dist": 2.7, "elev": 0,
+                   "azim": azim_from_global_orient(params["global_orient"])}
+
             # Drape garment onto body
             with torch.no_grad():
                 drape_result = draper(
@@ -131,23 +139,30 @@ def render_garments(garments_dir: str, smplx_params_dir: str, output_dir: str,
                 )
 
             draped_verts = drape_result["draped_verts"]
-            tex_colors = torch.ones_like(draped_verts) * 0.7
+
+            # Textured render: bake the garment's real per-vertex colors instead of
+            # a flat gray, so GarmentNet/IP-Adapter see the true appearance.
+            vc = garment_data.get("vertex_colors")
+            if vc is not None and vc.shape[0] == draped_verts.shape[1]:
+                tex_colors = torch.tensor(vc, dtype=torch.float32, device=device).unsqueeze(0)
+            else:
+                tex_colors = torch.ones_like(draped_verts) * 0.7
 
             # RGB render
-            render = renderer.render(draped_verts, garment_faces, tex_colors)
+            render = renderer.render(draped_verts, garment_faces, tex_colors, cam)
             render_rgb = render[:, :3]
             render_np = (render_rgb[0].permute(1, 2, 0).cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
             cv2.imwrite(str(out_dir / f"{output_name}.png"), render_np[:, :, ::-1])
 
-            # Normal map
+            # Normal map (same camera azimuth as RGB)
             if normal_maps_dir:
-                normal_render = renderer.render_normal_map(draped_verts, garment_faces)
+                normal_render = renderer.render_normal_map(draped_verts, garment_faces, cam)
                 normal_np = (normal_render[0, :3].permute(1, 2, 0).cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
                 cv2.imwrite(str(Path(normal_maps_dir) / f"{output_name}.png"), normal_np[:, :, ::-1])
 
-            # Depth map
+            # Depth map (same camera azimuth as RGB)
             if depth_maps_dir:
-                depth_render = renderer.render_depth_map(draped_verts, garment_faces)
+                depth_render = renderer.render_depth_map(draped_verts, garment_faces, cam)
                 depth_np = (depth_render[0, 0].cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
                 cv2.imwrite(str(Path(depth_maps_dir) / f"{output_name}.png"), depth_np)
 

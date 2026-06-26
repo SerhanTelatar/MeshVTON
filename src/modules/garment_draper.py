@@ -209,17 +209,20 @@ def load_garment_mesh(path: str) -> dict[str, np.ndarray]:
         path: Mesh file path.
 
     Returns:
-        Dict: 'vertices' (V, 3), 'faces' (F, 3), 'uv' (V, 2), 'texture' (H, W, 3)
+        Dict: 'vertices' (V, 3), 'faces' (F, 3), 'uv' (V, 2), 'texture' (H, W, 3),
+              'vertex_colors' (V, 3) in [0,1] — real garment color baked per vertex
+              (used for textured rendering; falls back to neutral gray if absent).
     """
     ext = Path(path).suffix.lower()
 
     try:
         import trimesh
 
-        mesh = trimesh.load(path, force="mesh")
+        mesh = trimesh.load(path, force="mesh", process=False)
 
+        verts = np.array(mesh.vertices, dtype=np.float32)
         result = {
-            "vertices": np.array(mesh.vertices, dtype=np.float32),
+            "vertices": verts,
             "faces": np.array(mesh.faces, dtype=np.int64),
         }
 
@@ -235,6 +238,21 @@ def load_garment_mesh(path: str) -> dict[str, np.ndarray]:
         else:
             result["texture"] = np.ones((512, 512, 3), dtype=np.uint8) * 200
 
+        # Per-vertex colors — bake UV/material texture down to vertex colors so the
+        # PyTorch3D TexturesVertex renderer shows the garment's real appearance
+        # instead of a flat gray blob.
+        vertex_colors = None
+        try:
+            vc = mesh.visual.to_color().vertex_colors  # (V, 4) uint8
+            vc = np.asarray(vc, dtype=np.float32)[:, :3] / 255.0
+            if vc.shape[0] == verts.shape[0]:
+                vertex_colors = vc
+        except Exception:
+            vertex_colors = None
+        if vertex_colors is None:
+            vertex_colors = np.full((verts.shape[0], 3), 0.7, dtype=np.float32)
+        result["vertex_colors"] = vertex_colors
+
         return result
 
     except ImportError:
@@ -244,4 +262,5 @@ def load_garment_mesh(path: str) -> dict[str, np.ndarray]:
             "faces": np.zeros((50, 3), dtype=np.int64),
             "uv": np.zeros((100, 2), dtype=np.float32),
             "texture": np.ones((512, 512, 3), dtype=np.uint8) * 200,
+            "vertex_colors": np.full((100, 3), 0.7, dtype=np.float32),
         }
