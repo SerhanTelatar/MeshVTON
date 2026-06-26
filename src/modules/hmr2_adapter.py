@@ -18,10 +18,26 @@ inference share the same pose source.
 import numpy as np
 
 
+def _patch_torch_load_weights_only(torch):
+    """PyTorch 2.6+ defaults torch.load(weights_only=True), which rejects the
+    pickled dicts in HMR2's Lightning checkpoint → UnpicklingError. The 4D-Humans
+    checkpoint is trusted, so default weights_only=False for its loads. Idempotent.
+    """
+    if getattr(torch.load, "_wo_patched", False):
+        return
+    _orig = torch.load
+    def _load(*a, **k):
+        k.setdefault("weights_only", False)
+        return _orig(*a, **k)
+    _load._wo_patched = True
+    torch.load = _load
+
+
 def build_hmr2_regressor(device: str = "cuda", model_path: str = None):
     """Load HMR2.0 and return a `regress_fn(image_rgb, bbox) -> param dict`."""
     import cv2
     import torch
+    _patch_torch_load_weights_only(torch)
     from hmr2.models import download_models, load_hmr2, DEFAULT_CHECKPOINT
 
     # 4D-Humans does NOT auto-fetch its weights on first load — without this the
