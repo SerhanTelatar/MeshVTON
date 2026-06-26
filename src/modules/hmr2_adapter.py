@@ -22,7 +22,16 @@ def build_hmr2_regressor(device: str = "cuda", model_path: str = None):
     """Load HMR2.0 and return a `regress_fn(image_rgb, bbox) -> param dict`."""
     import cv2
     import torch
-    from hmr2.models import load_hmr2, DEFAULT_CHECKPOINT
+    from hmr2.models import download_models, load_hmr2, DEFAULT_CHECKPOINT
+
+    # 4D-Humans does NOT auto-fetch its weights on first load — without this the
+    # checkpoint + model_config.yaml don't exist and load_hmr2 raises
+    # FileNotFoundError(~/.cache/4DHumans/.../model_config.yaml). Download once.
+    try:
+        from hmr2.configs import CACHE_DIR_4DHUMANS
+        download_models(CACHE_DIR_4DHUMANS)
+    except Exception:
+        download_models()
 
     model, _cfg = load_hmr2(DEFAULT_CHECKPOINT)
     model = model.to(device).eval()
