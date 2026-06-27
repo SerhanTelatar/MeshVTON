@@ -6,10 +6,37 @@ Deforms a 3D garment asset (mesh) to fit the SMPL-X body mesh.
 
 from typing import Optional
 from pathlib import Path
+import os
+import glob
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+
+def _find_sibling_texture(obj_path: str) -> Optional[str]:
+    """`.obj`'un yanındaki texture görselini otomatik bul (CLOTH3D: obj + texture png).
+
+    Sıra: aynı isimli görsel → isim ipucu (tex/atlas/diffuse/albedo/color/uv) →
+    klasörde tek görsel varsa o. Bulamazsa None.
+    """
+    d = os.path.dirname(os.path.abspath(obj_path))
+    stem = os.path.splitext(os.path.basename(obj_path))[0]
+    exts = ("png", "jpg", "jpeg", "bmp")
+    for e in exts:
+        cand = os.path.join(d, f"{stem}.{e}")
+        if os.path.exists(cand):
+            return cand
+    imgs = []
+    for e in exts:
+        imgs += glob.glob(os.path.join(d, f"*.{e}"))
+    if not imgs:
+        return None
+    for hint in ("tex", "atlas", "diffuse", "albedo", "color", "uv"):
+        for f in imgs:
+            if hint in os.path.basename(f).lower():
+                return f
+    return imgs[0] if len(imgs) == 1 else None
 
 
 class GarmentDraper(nn.Module):
@@ -201,12 +228,15 @@ class GarmentRefineBlock(nn.Module):
         return self.net(x) + self.skip(x)
 
 
-def load_garment_mesh(path: str) -> dict[str, np.ndarray]:
+def load_garment_mesh(path: str, texture_path: Optional[str] = None) -> dict[str, np.ndarray]:
     """
     Load a 3D garment mesh file (.obj, .glb, .ply).
 
     Args:
         path: Mesh file path.
+        texture_path: optional explicit texture image path. If None, tries the
+            mesh's own material, then auto-detects a sibling image next to the .obj
+            (CLOTH3D ships obj + a separate texture .png with no .mtl).
 
     Returns:
         Dict: 'vertices' (V, 3), 'faces' (F, 3), 'uv' (V, 2), 'texture' (H, W, 3),
@@ -232,11 +262,24 @@ def load_garment_mesh(path: str) -> dict[str, np.ndarray]:
         else:
             result["uv"] = np.zeros((len(mesh.vertices), 2), dtype=np.float32)
 
-        # Texture
-        if hasattr(mesh.visual, "material") and hasattr(mesh.visual.material, "image"):
-            result["texture"] = np.array(mesh.visual.material.image)[:, :, :3]
-        else:
-            result["texture"] = np.ones((512, 512, 3), dtype=np.uint8) * 200
+        # Texture görüntüsü: açık yol > mesh materyali > kardeş dosya > gri fallback
+        tex_img = None
+        try:
+            from PIL import Image as _PILImage
+            src = None
+            if texture_path and os.path.exists(texture_path):
+                src = texture_path
+            elif hasattr(mesh.visual, "material") and getattr(mesh.visual.material, "image", None) is not None:
+                tex_img = np.array(mesh.visual.material.image)[:, :, :3]
+            if tex_img is None:
+                if src is None:
+                    src = _find_sibling_texture(path)
+                if src is not None:
+                    tex_img = np.array(_PILImage.open(src).convert("RGB"))
+                    result["texture_path"] = src
+        except Exception as _e:
+            tex_img = None
+        result["texture"] = tex_img if tex_img is not None else np.ones((512, 512, 3), dtype=np.uint8) * 200
 
         # Per-vertex colors — bake UV/material texture down to vertex colors so the
         # PyTorch3D TexturesVertex renderer shows the garment's real appearance

@@ -144,6 +144,7 @@ def build_conditioning_3d(
     width: int = 384,
     view_angle: Optional[float] = None,
     smplx_params: Optional[dict] = None,
+    texture_path: Optional[str] = None,
     device: str = "cuda",
     dtype: torch.dtype = torch.float32,
 ) -> dict:
@@ -180,7 +181,7 @@ def build_conditioning_3d(
     cam = {"dist": 2.7, "elev": 0, "azim": azim}
 
     # 3) Garment: load, drape (geometric align to body size), keep real colors.
-    garment = load_garment_mesh(mesh_path)
+    garment = load_garment_mesh(mesh_path, texture_path=texture_path)
     g_verts = torch.tensor(garment["vertices"], dtype=torch.float32, device=device).unsqueeze(0)
     g_faces = torch.tensor(garment["faces"], dtype=torch.long, device=device)
     g_colors = torch.tensor(garment["vertex_colors"], dtype=torch.float32, device=device).unsqueeze(0)
