@@ -56,6 +56,83 @@ def azim_from_global_orient(global_orient: np.ndarray) -> float:
         return 0.0
 
 
+def _coco18_keypoints(pose_keypoints):
+    """OpenPose çıktısını (N,3) [x,y,conf] COCO-18 dizisine normalize et.
+
+    `pose_keypoints` bir dict ('pose_keypoints_2d') veya düz/array olabilir;
+    confidence sütunu yoksa hepsi görünür kabul edilir. Başarısızsa None döner.
+    """
+    if pose_keypoints is None:
+        return None
+    try:
+        kp = pose_keypoints
+        if isinstance(kp, dict):
+            kp = kp.get("pose_keypoints_2d", kp)
+        arr = np.asarray(kp, dtype=np.float32)
+        if arr.ndim == 1:
+            arr = arr.reshape(-1, 3) if arr.size % 3 == 0 else arr.reshape(-1, 2)
+        if arr.shape[-1] == 2:  # confidence yok → tümü görünür
+            arr = np.concatenate([arr, np.ones((arr.shape[0], 1), np.float32)], axis=1)
+        return arr
+    except Exception:
+        return None
+
+
+def detect_facing(parse=None, pose_keypoints=None, conf_th: float = 0.1):
+    """Kişinin ön mü arka mı baktığını 2D ipuçlarından tahmin et.
+
+    HMR2'nin monoküler global_orient'i ön/arka'yı güvenilmez ayırdığı için
+    ([azim_from_global_orient] gürültülü) bu fonksiyon parsing + openpose'tan
+    sağlam bir oy verir. Döner: ('front' | 'back' | None, açıklama).
+
+    Sinyaller:
+      1) Human parsing: head/face(=11) vs hair(=2) piksel oranı (IDM-VTON label_map).
+      2) OpenPose: omuz x-sırası (Lsho - Rsho işareti) + yüz noktası görünürlüğü.
+    """
+    votes = []
+    # 1) Parsing — yüz(head) vs saç
+    if parse is not None:
+        a = np.asarray(parse)
+        if a.ndim == 3:
+            a = a[..., 0]
+        n = max(a.size, 1)
+        face = float((a == 11).sum()) / n
+        hair = float((a == 2).sum()) / n
+        if face > 0.002:
+            votes.append("front")
+        elif hair > 0.002 and face < 0.0005:
+            votes.append("back")
+
+    # 2) OpenPose — omuz sırası + yüz noktaları (COCO-18:
+    #    0 nose,2 Rsho,5 Lsho,14 Reye,15 Leye,16 Rear,17 Lear)
+    kp = _coco18_keypoints(pose_keypoints)
+    if kp is not None and len(kp) >= 6:
+        def ok(i):
+            return i < len(kp) and kp[i, 2] > conf_th
+        if ok(2) and ok(5):
+            dx = kp[5, 0] - kp[2, 0]  # ön: sol omuz daha büyük x'te
+            span = float(kp[:, 0].max() - kp[:, 0].min()) + 1e-3
+            if abs(dx) > 0.06 * span:
+                votes.append("front" if dx > 0 else "back")
+        face_pts = sum(ok(i) for i in (0, 14, 15))
+        if face_pts >= 2:
+            votes.append("front")
+        elif face_pts == 0 and (ok(16) or ok(17)):
+            votes.append("back")
+
+    if not votes:
+        return None, "belirsiz (yan profil olabilir)"
+    nf, nb = votes.count("front"), votes.count("back")
+    if nf == nb:
+        return None, f"çelişkili oylar={votes}"
+    return ("front" if nf > nb else "back"), f"oylar={votes}"
+
+
+def azim_from_facing(facing):
+    """Ön/arka etiketini kamera azimuth'una çevir. front→0°, back→180°, diğer→None."""
+    return {"front": 0.0, "back": 180.0}.get(facing)
+
+
 @torch.no_grad()
 def build_conditioning_3d(
     person_image,
