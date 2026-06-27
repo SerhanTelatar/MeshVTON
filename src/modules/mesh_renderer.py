@@ -156,7 +156,8 @@ class MeshRenderer:
     def render_uv(self, vertices: torch.Tensor, faces: torch.Tensor,
                   verts_uvs: torch.Tensor, faces_uvs: torch.Tensor,
                   texture_map: torch.Tensor,
-                  camera_params: Optional[dict] = None) -> torch.Tensor:
+                  camera_params: Optional[dict] = None,
+                  flat: bool = True) -> torch.Tensor:
         """Render a mesh with a real UV texture map (preserves the garment pattern).
 
         Unlike `render` (TexturesVertex, which bakes color per vertex and loses
@@ -204,7 +205,21 @@ class MeshRenderer:
             if hasattr(self.renderer.shader, "cameras"):
                 self.renderer.shader.cameras = cameras
 
-        images = self.renderer(meshes)  # (B, H, W, 4)
+        # Flat/unlit: garmentin gerçek rengini gölgesiz göster (ürün-foto gibi) →
+        # donmuş GarmentNet/IP-Adapter için in-distribution. AmbientLights = sadece
+        # ambient terim (diffuse/specular yok) → düz texture.
+        orig_lights = getattr(self.renderer.shader, "lights", None)
+        if flat:
+            try:
+                from pytorch3d.renderer import AmbientLights
+                self.renderer.shader.lights = AmbientLights(device=self.device)
+            except Exception:
+                flat = False
+        try:
+            images = self.renderer(meshes)  # (B, H, W, 4)
+        finally:
+            if flat and orig_lights is not None:
+                self.renderer.shader.lights = orig_lights
         return images.permute(0, 3, 1, 2)
 
     def _render_placeholder(self, batch_size: int) -> torch.Tensor:

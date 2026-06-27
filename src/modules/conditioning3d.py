@@ -133,6 +133,35 @@ def azim_from_facing(facing):
     return {"front": 0.0, "back": 180.0}.get(facing)
 
 
+def azim_from_2d(parse=None, pose_keypoints=None, conf_th: float = 0.1):
+    """2D ipuçlarından TÜM-AÇI azimuth tahmini (ön/arka/yan). Döner: (azim|None, açıklama).
+
+    Mantık:
+      - Omuzlar x'te birbirine YAKINSA (üst üste) → yan profil (90° veya 270°).
+        Sol/sağ: burun, boyun/omuz ortasının hangi tarafında → 90/270.
+      - Omuzlar AÇIK ise → ön/arka (detect_facing: parse yüz/saç + omuz sırası) → 0/180.
+      - Hiçbiri net değilse → None (çağıran HMR2 azim'ine veya VIEW_ANGLE'a düşer).
+
+    Yan profil işareti (90 vs 270) regressor/kameraya göre ters olabilir → gerekirse
+    notebook'ta VIEW_ANGLE ile elle ezilir.
+    """
+    kp = _coco18_keypoints(pose_keypoints)
+    if kp is not None and len(kp) >= 6:
+        def ok(i):
+            return i < len(kp) and kp[i, 2] > conf_th
+        if ok(2) and ok(5):
+            dx = abs(kp[5, 0] - kp[2, 0])
+            span = float(kp[:, 0].max() - kp[:, 0].min()) + 1e-3
+            if dx < 0.18 * span:  # omuzlar üst üste → yan profil
+                ref_x = kp[1, 0] if ok(1) else (kp[2, 0] + kp[5, 0]) / 2.0
+                nose_x = kp[0, 0] if ok(0) else ref_x
+                # burun referansın solundaysa sol profil → 270, sağındaysa sağ → 90
+                side = "left" if nose_x < ref_x else "right"
+                return (270.0 if side == "left" else 90.0), f"profile/{side}"
+    facing, why = detect_facing(parse, pose_keypoints, conf_th)
+    return azim_from_facing(facing), why
+
+
 @torch.no_grad()
 def build_conditioning_3d(
     person_image,
@@ -206,7 +235,7 @@ def build_conditioning_3d(
         faces_uvs = g_faces.unsqueeze(0)
         tmap = torch.tensor(tex[..., :3].astype(np.float32) / 255.0,
                             dtype=torch.float32, device=device).unsqueeze(0)  # (1,H,W,3)
-        rgb = renderer.render_uv(draped, g_faces, verts_uvs, faces_uvs, tmap, cam)
+        rgb = renderer.render_uv(draped, g_faces, verts_uvs, faces_uvs, tmap, cam, flat=True)
     else:
         rgb = renderer.render(draped, g_faces, g_colors, cam)        # (1,4,H,W) gri fallback
     normal = renderer.render_normal_map(draped, g_faces, cam)        # (1,4,H,W)
@@ -224,9 +253,19 @@ def build_conditioning_3d(
     rgb_np = (rgb[0, :3].permute(1, 2, 0).clamp(0, 1).cpu().numpy() * 255).astype(np.uint8)
     render_rgb = Image.fromarray(rgb_np).resize((width, height), Image.LANCZOS)
 
+    # Garment silhouette (mask) from the render: alpha if present, else non-white pixels.
+    # Used (optionally) to make the inpaint mask follow the garment's real shape.
+    if rgb.shape[1] >= 4:
+        sil = (rgb[0, 3] > 0.5).float()
+    else:
+        sil = (rgb[0, :3].mean(0) < 0.98).float()  # white bg → foreground = garment
+    sil = F.interpolate(sil[None, None], size=(height, width), mode="nearest")[0, 0]
+    silhouette = Image.fromarray((sil.cpu().numpy() * 255).astype(np.uint8))
+
     return {
         "conditioning_3d": conditioning_3d,
         "render_rgb": render_rgb,
+        "silhouette": silhouette,
         "azim": azim,
         "global_orient": params["global_orient"],
     }
