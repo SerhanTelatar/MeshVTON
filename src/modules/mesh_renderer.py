@@ -153,6 +153,60 @@ class MeshRenderer:
 
         return images
 
+    def render_uv(self, vertices: torch.Tensor, faces: torch.Tensor,
+                  verts_uvs: torch.Tensor, faces_uvs: torch.Tensor,
+                  texture_map: torch.Tensor,
+                  camera_params: Optional[dict] = None) -> torch.Tensor:
+        """Render a mesh with a real UV texture map (preserves the garment pattern).
+
+        Unlike `render` (TexturesVertex, which bakes color per vertex and loses
+        fine pattern), this uses TexturesUV so the garment's actual print/texture
+        shows up in the render that feeds GarmentNet / IP-Adapter.
+
+        Args:
+            vertices: (B, V, 3) draped vertex positions.
+            faces: (F, 3) triangle vertex indices.
+            verts_uvs: (1, V, 2) per-vertex UV coords (trimesh visual.uv).
+            faces_uvs: (1, F, 3) UV index per face (== faces when uv is per-vertex).
+            texture_map: (1, H, W, 3) texture image in [0, 1].
+            camera_params: optional camera override (must match RGB/normal/depth azim).
+        Returns:
+            (B, 4, H, W) RGBA render.
+        """
+        if self.renderer is None:
+            self.setup()
+        if self.renderer is None:
+            return self._render_placeholder(vertices.shape[0])
+
+        from pytorch3d.structures import Meshes
+        from pytorch3d.renderer import TexturesUV
+
+        b = vertices.shape[0]
+        tex = TexturesUV(
+            maps=texture_map.to(self.device),
+            faces_uvs=faces_uvs.to(self.device).long(),
+            verts_uvs=verts_uvs.to(self.device),
+            padding_mode="border",
+            align_corners=True,
+        )
+        faces_batch = faces.unsqueeze(0).expand(b, -1, -1) if faces.dim() == 2 else faces
+        meshes = Meshes(verts=vertices, faces=faces_batch, textures=tex)
+
+        if camera_params is not None:
+            from pytorch3d.renderer import look_at_view_transform, FoVPerspectiveCameras
+            R, T = look_at_view_transform(
+                dist=camera_params.get("dist", 2.7),
+                elev=camera_params.get("elev", 0),
+                azim=camera_params.get("azim", 0),
+            )
+            cameras = FoVPerspectiveCameras(device=self.device, R=R, T=T)
+            self.renderer.rasterizer.cameras = cameras
+            if hasattr(self.renderer.shader, "cameras"):
+                self.renderer.shader.cameras = cameras
+
+        images = self.renderer(meshes)  # (B, H, W, 4)
+        return images.permute(0, 3, 1, 2)
+
     def _render_placeholder(self, batch_size: int) -> torch.Tensor:
         """Placeholder render when PyTorch3D is unavailable."""
         return torch.ones(batch_size, 4, self.image_size, self.image_size,

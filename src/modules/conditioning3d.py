@@ -190,8 +190,24 @@ def build_conditioning_3d(
     drape = draper(g_verts, g_faces, b_verts, b_faces)
     draped = drape["draped_verts"]
 
-    # 4) Render RGB (textured) + normal + depth, all at the SAME azimuth.
-    rgb = renderer.render(draped, g_faces, g_colors, cam)            # (1,4,H,W)
+    # 4) Render RGB + normal + depth, all at the SAME azimuth.
+    # Prefer a REAL UV texture (preserves the garment pattern) when the mesh carries
+    # one (.obj + .mtl + texture image); else fall back to baked vertex colors (gray).
+    uv = np.asarray(garment.get("uv", np.zeros((0, 2))), dtype=np.float32)
+    tex = np.asarray(garment.get("texture", np.zeros((0, 0, 0))))
+    n_verts = garment["vertices"].shape[0]
+    has_uv_tex = (
+        tex.ndim == 3 and min(tex.shape[:2]) >= 8 and float(tex.std()) > 2.0
+        and uv.shape == (n_verts, 2) and float(np.abs(uv).sum()) > 0.0
+    )
+    if has_uv_tex:
+        verts_uvs = torch.tensor(uv, dtype=torch.float32, device=device).unsqueeze(0)
+        faces_uvs = g_faces.unsqueeze(0)
+        tmap = torch.tensor(tex[..., :3].astype(np.float32) / 255.0,
+                            dtype=torch.float32, device=device).unsqueeze(0)  # (1,H,W,3)
+        rgb = renderer.render_uv(draped, g_faces, verts_uvs, faces_uvs, tmap, cam)
+    else:
+        rgb = renderer.render(draped, g_faces, g_colors, cam)        # (1,4,H,W) gri fallback
     normal = renderer.render_normal_map(draped, g_faces, cam)        # (1,4,H,W)
     depth = renderer.render_depth_map(draped, g_faces, cam)          # (1,4,H,W)
 
