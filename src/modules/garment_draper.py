@@ -262,24 +262,36 @@ def load_garment_mesh(path: str, texture_path: Optional[str] = None) -> dict[str
         else:
             result["uv"] = np.zeros((len(mesh.vertices), 2), dtype=np.float32)
 
-        # Texture görüntüsü: açık yol > mesh materyali > kardeş dosya > gri fallback
+        # Texture: GERÇEK bir görsel (>=8px) bul. trimesh, .mtl yoksa 2x2 placeholder
+        # material.image üretir → onu ELEME; CLOTH3D'nin kardeş texture.png'sini tercih et.
+        # Sıra: açık yol > kardeş dosya > (yalnızca gerçekse) mesh materyali > gri fallback.
+        def _real(a):
+            return a is not None and getattr(a, "ndim", 0) == 3 and min(a.shape[:2]) >= 8
+
         tex_img = None
         try:
             from PIL import Image as _PILImage
-            src = None
             if texture_path and os.path.exists(texture_path):
-                src = texture_path
-            elif hasattr(mesh.visual, "material") and getattr(mesh.visual.material, "image", None) is not None:
-                tex_img = np.array(mesh.visual.material.image)[:, :, :3]
-            if tex_img is None:
-                if src is None:
-                    src = _find_sibling_texture(path)
-                if src is not None:
-                    tex_img = np.array(_PILImage.open(src).convert("RGB"))
-                    result["texture_path"] = src
-        except Exception as _e:
+                cand = np.array(_PILImage.open(texture_path).convert("RGB"))
+                if _real(cand):
+                    tex_img = cand
+                    result["texture_path"] = texture_path
+            if not _real(tex_img):
+                sib = _find_sibling_texture(path)
+                if sib is not None:
+                    cand = np.array(_PILImage.open(sib).convert("RGB"))
+                    if _real(cand):
+                        tex_img = cand
+                        result["texture_path"] = sib
+            if not _real(tex_img):
+                mimg = getattr(getattr(mesh.visual, "material", None), "image", None)
+                if mimg is not None:
+                    cand = np.array(mimg)[:, :, :3]
+                    if _real(cand):
+                        tex_img = cand
+        except Exception:
             tex_img = None
-        result["texture"] = tex_img if tex_img is not None else np.ones((512, 512, 3), dtype=np.uint8) * 200
+        result["texture"] = tex_img if _real(tex_img) else np.ones((512, 512, 3), dtype=np.uint8) * 200
 
         # Per-vertex colors — bake UV/material texture down to vertex colors so the
         # PyTorch3D TexturesVertex renderer shows the garment's real appearance
