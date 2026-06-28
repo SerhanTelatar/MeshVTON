@@ -140,16 +140,29 @@ def render_garments(garments_dir: str, smplx_params_dir: str, output_dir: str,
 
             draped_verts = drape_result["draped_verts"]
 
-            # Textured render: bake the garment's real per-vertex colors instead of
-            # a flat gray, so GarmentNet/IP-Adapter see the true appearance.
-            vc = garment_data.get("vertex_colors")
-            if vc is not None and vc.shape[0] == draped_verts.shape[1]:
-                tex_colors = torch.tensor(vc, dtype=torch.float32, device=device).unsqueeze(0)
+            # Textured render via UV (giysinin gerçek desenini korur) — inference'taki
+            # build_conditioning_3d ile AYNI yol, böylece train/infer conditioning eşleşir.
+            uv = np.asarray(garment_data.get("uv", np.zeros((0, 2))), dtype=np.float32)
+            tex = np.asarray(garment_data.get("texture", np.zeros((0, 0, 0))))
+            n_v = garment_data["vertices"].shape[0]
+            has_uv_tex = (
+                tex.ndim == 3 and min(tex.shape[:2]) >= 8 and float(tex.std()) > 2.0
+                and uv.shape == (n_v, 2) and float(np.abs(uv).sum()) > 0.0
+            )
+            if has_uv_tex:
+                verts_uvs = torch.tensor(uv, dtype=torch.float32, device=device).unsqueeze(0)
+                faces_uvs = garment_faces.unsqueeze(0)
+                tmap = torch.tensor(tex[..., :3].astype(np.float32) / 255.0,
+                                    dtype=torch.float32, device=device).unsqueeze(0)
+                render = renderer.render_uv(draped_verts, garment_faces, verts_uvs,
+                                            faces_uvs, tmap, cam, flat=True)
             else:
-                tex_colors = torch.ones_like(draped_verts) * 0.7
-
-            # RGB render
-            render = renderer.render(draped_verts, garment_faces, tex_colors, cam)
+                vc = garment_data.get("vertex_colors")
+                if vc is not None and vc.shape[0] == draped_verts.shape[1]:
+                    tex_colors = torch.tensor(vc, dtype=torch.float32, device=device).unsqueeze(0)
+                else:
+                    tex_colors = torch.ones_like(draped_verts) * 0.7
+                render = renderer.render(draped_verts, garment_faces, tex_colors, cam)
             render_rgb = render[:, :3]
             render_np = (render_rgb[0].permute(1, 2, 0).cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
             cv2.imwrite(str(out_dir / f"{output_name}.png"), render_np[:, :, ::-1])
