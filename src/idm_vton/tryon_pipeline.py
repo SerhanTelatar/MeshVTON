@@ -1299,6 +1299,7 @@ class StableDiffusionXLInpaintPipeline(
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
         controlnet_3d=None,
         conditioning_3d=None,
+        controlnet_3d_scale: float = 1.0,
         **kwargs,
     ):
         r"""
@@ -1802,11 +1803,17 @@ class StableDiffusionXLInpaintPipeline(
                 # matching the SDXL UNet's down_block_res_samples + mid block.
                 down_block_res = None
                 mid_block_res = None
-                if controlnet_3d is not None and conditioning_3d is not None:
+                # controlnet_3d_scale<=0 → 3D ControlNet'i tamamen kapat (cn OFF). Ara
+                # değerler (0<scale<1) residualleri zayıflatır; render conditioning
+                # güvenilmezse (ör. yan profilde bozuk render) düşük tutmak sonucu iyileştirir.
+                if (controlnet_3d is not None and conditioning_3d is not None
+                        and controlnet_3d_scale > 0):
                     cn_out = controlnet_3d(
                         conditioning_3d.to(latent_model_input.dtype),
                         t.expand(conditioning_3d.shape[0]),
                     )
+                    if controlnet_3d_scale != 1.0:
+                        cn_out = [r * controlnet_3d_scale for r in cn_out]
                     if self.do_classifier_free_guidance:
                         cn_out = [torch.cat([torch.zeros_like(r), r]) for r in cn_out]
                     cn_out = [r.to(latent_model_input.dtype) for r in cn_out]
