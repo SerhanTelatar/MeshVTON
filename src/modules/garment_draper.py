@@ -15,10 +15,10 @@ import torch.nn.functional as F
 
 
 def _find_sibling_texture(obj_path: str) -> Optional[str]:
-    """`.obj`'un yanındaki texture görselini otomatik bul (CLOTH3D: obj + texture png).
+    """Auto-detect the texture image next to the `.obj` (CLOTH3D: obj + texture png).
 
-    Sıra: aynı isimli görsel → isim ipucu (tex/atlas/diffuse/albedo/color/uv) →
-    klasörde tek görsel varsa o. Bulamazsa None.
+    Order: image with the same name → name hint (tex/atlas/diffuse/albedo/color/uv) →
+    the sole image in the folder if there is only one. Returns None if not found.
     """
     d = os.path.dirname(os.path.abspath(obj_path))
     stem = os.path.splitext(os.path.basename(obj_path))[0]
@@ -262,9 +262,9 @@ def load_garment_mesh(path: str, texture_path: Optional[str] = None) -> dict[str
         else:
             result["uv"] = np.zeros((len(mesh.vertices), 2), dtype=np.float32)
 
-        # Texture: GERÇEK bir görsel (>=8px) bul. trimesh, .mtl yoksa 2x2 placeholder
-        # material.image üretir → onu ELEME; CLOTH3D'nin kardeş texture.png'sini tercih et.
-        # Sıra: açık yol > kardeş dosya > (yalnızca gerçekse) mesh materyali > gri fallback.
+        # Texture: find a REAL image (>=8px). When there is no .mtl, trimesh produces a
+        # 2x2 placeholder material.image → DISCARD it; prefer CLOTH3D's sibling texture.png.
+        # Order: explicit path > sibling file > (only if real) mesh material > gray fallback.
         def _real(a):
             return a is not None and getattr(a, "ndim", 0) == 3 and min(a.shape[:2]) >= 8
 

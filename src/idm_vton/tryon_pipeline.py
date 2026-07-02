@@ -1803,9 +1803,10 @@ class StableDiffusionXLInpaintPipeline(
                 # matching the SDXL UNet's down_block_res_samples + mid block.
                 down_block_res = None
                 mid_block_res = None
-                # controlnet_3d_scale<=0 → 3D ControlNet'i tamamen kapat (cn OFF). Ara
-                # değerler (0<scale<1) residualleri zayıflatır; render conditioning
-                # güvenilmezse (ör. yan profilde bozuk render) düşük tutmak sonucu iyileştirir.
+                # controlnet_3d_scale<=0 → disable the 3D ControlNet entirely (cn OFF).
+                # Intermediate values (0<scale<1) weaken the residuals; keeping it low
+                # improves results when the render conditioning is unreliable
+                # (e.g. a broken side-profile render).
                 if (controlnet_3d is not None and conditioning_3d is not None
                         and controlnet_3d_scale > 0):
                     cn_out = controlnet_3d(

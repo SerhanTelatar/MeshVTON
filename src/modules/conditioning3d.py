@@ -57,10 +57,10 @@ def azim_from_global_orient(global_orient: np.ndarray) -> float:
 
 
 def _coco18_keypoints(pose_keypoints):
-    """OpenPose çıktısını (N,3) [x,y,conf] COCO-18 dizisine normalize et.
+    """Normalize OpenPose output to an (N,3) [x,y,conf] COCO-18 array.
 
-    `pose_keypoints` bir dict ('pose_keypoints_2d') veya düz/array olabilir;
-    confidence sütunu yoksa hepsi görünür kabul edilir. Başarısızsa None döner.
+    `pose_keypoints` may be a dict ('pose_keypoints_2d') or a flat/array;
+    if the confidence column is missing, all points are assumed visible. Returns None on failure.
     """
     if pose_keypoints is None:
         return None
@@ -71,7 +71,7 @@ def _coco18_keypoints(pose_keypoints):
         arr = np.asarray(kp, dtype=np.float32)
         if arr.ndim == 1:
             arr = arr.reshape(-1, 3) if arr.size % 3 == 0 else arr.reshape(-1, 2)
-        if arr.shape[-1] == 2:  # confidence yok → tümü görünür
+        if arr.shape[-1] == 2:  # no confidence → all visible
             arr = np.concatenate([arr, np.ones((arr.shape[0], 1), np.float32)], axis=1)
         return arr
     except Exception:
@@ -79,18 +79,18 @@ def _coco18_keypoints(pose_keypoints):
 
 
 def detect_facing(parse=None, pose_keypoints=None, conf_th: float = 0.1):
-    """Kişinin ön mü arka mı baktığını 2D ipuçlarından tahmin et.
+    """Estimate whether the person is facing front or back from 2D cues.
 
-    HMR2'nin monoküler global_orient'i ön/arka'yı güvenilmez ayırdığı için
-    ([azim_from_global_orient] gürültülü) bu fonksiyon parsing + openpose'tan
-    sağlam bir oy verir. Döner: ('front' | 'back' | None, açıklama).
+    Because HMR2's monocular global_orient separates front/back unreliably
+    ([azim_from_global_orient] is noisy), this function casts a robust vote from
+    parsing + openpose. Returns: ('front' | 'back' | None, explanation).
 
-    Sinyaller:
-      1) Human parsing: head/face(=11) vs hair(=2) piksel oranı (IDM-VTON label_map).
-      2) OpenPose: omuz x-sırası (Lsho - Rsho işareti) + yüz noktası görünürlüğü.
+    Signals:
+      1) Human parsing: head/face(=11) vs hair(=2) pixel ratio (IDM-VTON label_map).
+      2) OpenPose: shoulder x-order (sign of Lsho - Rsho) + face keypoint visibility.
     """
     votes = []
-    # 1) Parsing — yüz(head) vs saç
+    # 1) Parsing — face(head) vs hair
     if parse is not None:
         a = np.asarray(parse)
         if a.ndim == 3:
@@ -103,14 +103,14 @@ def detect_facing(parse=None, pose_keypoints=None, conf_th: float = 0.1):
         elif hair > 0.002 and face < 0.0005:
             votes.append("back")
 
-    # 2) OpenPose — omuz sırası + yüz noktaları (COCO-18:
+    # 2) OpenPose — shoulder order + face keypoints (COCO-18:
     #    0 nose,2 Rsho,5 Lsho,14 Reye,15 Leye,16 Rear,17 Lear)
     kp = _coco18_keypoints(pose_keypoints)
     if kp is not None and len(kp) >= 6:
         def ok(i):
             return i < len(kp) and kp[i, 2] > conf_th
         if ok(2) and ok(5):
-            dx = kp[5, 0] - kp[2, 0]  # ön: sol omuz daha büyük x'te
+            dx = kp[5, 0] - kp[2, 0]  # front: left shoulder at larger x
             span = float(kp[:, 0].max() - kp[:, 0].min()) + 1e-3
             if abs(dx) > 0.06 * span:
                 votes.append("front" if dx > 0 else "back")
@@ -121,29 +121,29 @@ def detect_facing(parse=None, pose_keypoints=None, conf_th: float = 0.1):
             votes.append("back")
 
     if not votes:
-        return None, "belirsiz (yan profil olabilir)"
+        return None, "uncertain (may be side profile)"
     nf, nb = votes.count("front"), votes.count("back")
     if nf == nb:
-        return None, f"çelişkili oylar={votes}"
-    return ("front" if nf > nb else "back"), f"oylar={votes}"
+        return None, f"conflicting votes={votes}"
+    return ("front" if nf > nb else "back"), f"votes={votes}"
 
 
 def azim_from_facing(facing):
-    """Ön/arka etiketini kamera azimuth'una çevir. front→0°, back→180°, diğer→None."""
+    """Convert a front/back label to a camera azimuth. front→0°, back→180°, other→None."""
     return {"front": 0.0, "back": 180.0}.get(facing)
 
 
 def azim_from_2d(parse=None, pose_keypoints=None, conf_th: float = 0.1):
-    """2D ipuçlarından TÜM-AÇI azimuth tahmini (ön/arka/yan). Döner: (azim|None, açıklama).
+    """FULL-ANGLE azimuth estimate from 2D cues (front/back/side). Returns: (azim|None, explanation).
 
-    Mantık:
-      - Omuzlar x'te birbirine YAKINSA (üst üste) → yan profil (90° veya 270°).
-        Sol/sağ: burun, boyun/omuz ortasının hangi tarafında → 90/270.
-      - Omuzlar AÇIK ise → ön/arka (detect_facing: parse yüz/saç + omuz sırası) → 0/180.
-      - Hiçbiri net değilse → None (çağıran HMR2 azim'ine veya VIEW_ANGLE'a düşer).
+    Logic:
+      - If the shoulders are CLOSE in x (overlapping) → side profile (90° or 270°).
+        Left/right: which side of the neck/shoulder midpoint the nose is on → 90/270.
+      - If the shoulders are APART → front/back (detect_facing: parse face/hair + shoulder order) → 0/180.
+      - If none is clear → None (caller falls back to the HMR2 azim or VIEW_ANGLE).
 
-    Yan profil işareti (90 vs 270) regressor/kameraya göre ters olabilir → gerekirse
-    notebook'ta VIEW_ANGLE ile elle ezilir.
+    The side-profile sign (90 vs 270) may be inverted depending on the regressor/camera → if needed
+    it is overridden manually via VIEW_ANGLE in the notebook.
     """
     kp = _coco18_keypoints(pose_keypoints)
     if kp is not None and len(kp) >= 6:
@@ -152,10 +152,10 @@ def azim_from_2d(parse=None, pose_keypoints=None, conf_th: float = 0.1):
         if ok(2) and ok(5):
             dx = abs(kp[5, 0] - kp[2, 0])
             span = float(kp[:, 0].max() - kp[:, 0].min()) + 1e-3
-            if dx < 0.18 * span:  # omuzlar üst üste → yan profil
+            if dx < 0.18 * span:  # shoulders overlapping → side profile
                 ref_x = kp[1, 0] if ok(1) else (kp[2, 0] + kp[5, 0]) / 2.0
                 nose_x = kp[0, 0] if ok(0) else ref_x
-                # burun referansın solundaysa sol profil → 270, sağındaysa sağ → 90
+                # nose left of reference → left profile → 270, right → right → 90
                 side = "left" if nose_x < ref_x else "right"
                 return (270.0 if side == "left" else 90.0), f"profile/{side}"
     facing, why = detect_facing(parse, pose_keypoints, conf_th)
