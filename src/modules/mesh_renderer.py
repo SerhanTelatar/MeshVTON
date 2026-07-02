@@ -205,9 +205,9 @@ class MeshRenderer:
             if hasattr(self.renderer.shader, "cameras"):
                 self.renderer.shader.cameras = cameras
 
-        # Flat/unlit: garmentin gerçek rengini gölgesiz göster (ürün-foto gibi) →
-        # donmuş GarmentNet/IP-Adapter için in-distribution. AmbientLights = sadece
-        # ambient terim (diffuse/specular yok) → düz texture.
+        # Flat/unlit: show the garment's true color without shading (like a product photo) →
+        # in-distribution for the frozen GarmentNet/IP-Adapter. AmbientLights = ambient
+        # term only (no diffuse/specular) → flat texture.
         orig_lights = getattr(self.renderer.shader, "lights", None)
         if flat:
             try:

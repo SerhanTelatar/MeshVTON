@@ -140,8 +140,8 @@ def render_garments(garments_dir: str, smplx_params_dir: str, output_dir: str,
 
             draped_verts = drape_result["draped_verts"]
 
-            # Textured render via UV (giysinin gerçek desenini korur) — inference'taki
-            # build_conditioning_3d ile AYNI yol, böylece train/infer conditioning eşleşir.
+            # Textured render via UV (preserves the garment's real pattern) — the SAME
+            # path as build_conditioning_3d at inference, so train/infer conditioning matches.
             uv = np.asarray(garment_data.get("uv", np.zeros((0, 2))), dtype=np.float32)
             tex = np.asarray(garment_data.get("texture", np.zeros((0, 0, 0))))
             n_v = garment_data["vertices"].shape[0]
