@@ -101,3 +101,65 @@ def build_hmr2_backend(device: str = "cuda"):
         }
 
     return regress
+
+
+# --------------------------------------------------------------------------- #
+# SMPL-X gövde modeli (builder'ın vertex kaynağı)
+# --------------------------------------------------------------------------- #
+
+_BODY_MODEL = None
+
+
+def get_body_model(model_dir: str | None = None, device: str = "cpu") -> "SMPLXBody":
+    """Süreç-başına tek SMPLXBody (model yüklemesi pahalı). Yol önceliği:
+    açık argüman > SMPLX_MODEL_DIR env > v1 konumu checkpoints/pretrained/smplx."""
+    global _BODY_MODEL
+    if _BODY_MODEL is None:
+        import os
+
+        path = model_dir or os.environ.get("SMPLX_MODEL_DIR", "checkpoints/pretrained/smplx")
+        _BODY_MODEL = SMPLXBody(path, device=device)
+    return _BODY_MODEL
+
+
+class SMPLXBody:
+    """smplx paketinin ince sarmalayıcısı — builder sözleşmesindeki parametrelerden
+    vertex/pelvis üretir. Kamera-hizalı çerçevede çalışır (global_orient HMR2'den)."""
+
+    def __init__(self, model_dir: str, gender: str = "neutral", device: str = "cpu"):
+        import smplx
+        import torch
+
+        self.torch = torch
+        self.device = device
+        self.model = smplx.create(
+            model_dir, model_type="smplx", gender=gender, use_pca=False, batch_size=1
+        ).to(device)
+        self.faces = np.asarray(self.model.faces, dtype=np.int64)
+
+    def _t(self, a, n):
+        t = self.torch.from_numpy(np.asarray(a, np.float32).reshape(1, n)).to(self.device)
+        return t
+
+    def __call__(self, smplx_params: dict) -> dict:
+        """-> {verts (V,3) float64, faces (F,3), pelvis (3,)} — kamera çerçevesinde."""
+        with self.torch.no_grad():
+            out = self.model(
+                betas=self._t(smplx_params["betas"], 10),
+                body_pose=self._t(smplx_params["body_pose"], 63),
+                global_orient=self._t(smplx_params["global_orient"], 3),
+                transl=self._t(smplx_params.get("transl", np.zeros(3)), 3),
+                return_verts=True,
+            )
+        verts = out.vertices[0].cpu().numpy().astype(np.float64)
+        pelvis = out.joints[0, 0].cpu().numpy().astype(np.float64)
+        return {"verts": verts, "faces": self.faces, "pelvis": pelvis}
+
+    def rest(self) -> dict:
+        """Varsayılan rest gövde (β=0, θ=0) — giysi bağlama (binding) referansı.
+        Cache per-garment evrensel kalsın diye kişiye özgü β KULLANILMAZ."""
+        zeros = {
+            "betas": np.zeros(10), "body_pose": np.zeros(63),
+            "global_orient": np.zeros(3), "transl": np.zeros(3),
+        }
+        return self(zeros)

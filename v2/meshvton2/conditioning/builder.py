@@ -9,17 +9,18 @@ bunu iki yoldan aynı girdiyle çağırıp tensör eşitliğini zorlar.
 
 Bu imza Faz 0'da donmuştur; alan eklemek serbest, mevcut alanı değiştirmek yasak.
 
-FAZ 0 DURUMU: implementasyon deterministik STUB'tır (_IS_STUB=True) — doğru
-şekil/aralıkta, girdilere deterministik bağlı sahte tensörler üretir ki parite
-testi gerçek implementasyon gelmeden önce de anlamlı çalışsın. Faz 2'de stub
-gövdesi gerçek hatla (HMR2 kamera + LBS drape + PyTorch3D render) değiştirilir;
-imza ve testler değişmez.
+İMPLEMENTASYON SEÇİMİ: gerçek hat (SMPL-X + LBS drape + pyrender) varsayılandır.
+`MESHVTON2_STUB=1` ortam değişkeni deterministik stub'ı seçer — YALNIZ 3D
+bağımlılıkları olmayan geliştirme makinesindeki testler için (tests/conftest.py
+bunu otomatik ayarlar). Üretim scriptleri `assert_real_impl()` çağırır: v1'in
+"sessiz placeholder" felaketi yapısal olarak engellenir.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -27,9 +28,21 @@ from typing import Any
 import numpy as np
 import torch
 
-_IS_STUB = True  # Faz 2'de False yapılır; test_parity bunu umursamaz, run_tryon uyarır.
-
 CANONICAL_SIZE = (1024, 768)  # (height, width) — configs/base.yaml ile aynı
+
+
+def implementation() -> str:
+    """"real" | "stub" — her çağrıda env'den okunur (test izolasyonu için)."""
+    return "stub" if os.environ.get("MESHVTON2_STUB") == "1" else "real"
+
+
+def assert_real_impl() -> None:
+    """Üretim giriş noktaları (synth üretici, ön-işleme, run_tryon) bunu çağırır."""
+    if implementation() != "real":
+        raise RuntimeError(
+            "build_conditioning STUB modda (MESHVTON2_STUB=1) — üretimde yasak. "
+            "Bu, v1'in 'eğitilmemiş placeholder sessizce çalıştı' hatasının panzehiridir."
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -122,6 +135,7 @@ def build_conditioning(
     *,
     size: tuple[int, int] = CANONICAL_SIZE,
     device: str = "cpu",
+    person_prep: Any | None = None,  # PersonPrep — foto modunda ZORUNLU (agnostic+mask kaynağı)
 ) -> ConditioningBundle:
     """Koşullama demetini üretir.
 
@@ -149,11 +163,123 @@ def build_conditioning(
     if not isinstance(view, (PhotoView, OrbitView)):
         raise TypeError(f"view PhotoView|OrbitView olmalı, gelen {type(view)}")
 
-    return _build_impl(person_image, smplx_params, garment, view, size=size, device=device)
+    if implementation() == "stub":
+        return _build_impl_stub(person_image, smplx_params, garment, view, size=size, device=device)
+    return _build_impl_real(
+        person_image, smplx_params, garment, view, size=size, device=device, person_prep=person_prep
+    )
 
 
 # --------------------------------------------------------------------------- #
-# Faz 0 stub implementasyonu — Faz 2'de gerçek hatla değiştirilir
+# Gerçek implementasyon (Faz 2): SMPL-X + LBS drape + ekran-uzayı render
+# --------------------------------------------------------------------------- #
+
+
+def _to_tensor01(img01: np.ndarray) -> torch.Tensor:
+    """(H,W,3) [0,1] float -> (3,H,W) float32 [-1,1]."""
+    return torch.from_numpy(np.ascontiguousarray(img01.transpose(2, 0, 1))).float() * 2.0 - 1.0
+
+
+def _prealign_garment(gverts: np.ndarray, body_verts: np.ndarray, category_hint: str = "top") -> np.ndarray:
+    """Bağlama öncesi kaba hizalama (yalnız binding referansı — v1'in aksine tek
+    mekanizma DEĞİL): Z-up→Y-up, gövde genişliğine ölçek, gövdeye merkezleme.
+    Üst giyim gövde-üst merkezine, elbise gövde merkezine oturur."""
+    from meshvton2.conditioning.render import zup_to_yup
+
+    g = zup_to_yup(np.asarray(gverts, np.float64))
+    g -= g.mean(axis=0)
+    b = np.asarray(body_verts, np.float64)
+    bc = b.mean(axis=0)
+    width = lambda v: v[:, 0].max() - v[:, 0].min()
+    g *= (1.1 * width(b)) / max(width(g), 1e-8)
+    target = bc.copy()
+    if category_hint == "top":
+        height = b[:, 1].max() - b[:, 1].min()
+        target[1] = bc[1] - 0.22 * height  # kamera çerçevesinde +y aşağı → göğüs merkez üstünde
+    return g + target
+
+
+def _get_binding(garment: GarmentAsset, body_model) -> "GarmentBinding":  # noqa: F821
+    """Giysi bağlamasını cache'ten yükler ya da rest gövdeye kurar ve cache'ler."""
+    from meshvton2.conditioning.lbs_drape import GarmentBinding, bind_garment
+
+    if garment.lbs_cache and Path(garment.lbs_cache).exists():
+        return GarmentBinding.load(garment.lbs_cache)
+    rest = body_model.rest()
+    aligned = _prealign_garment(garment.verts, rest["verts"])
+    binding = bind_garment(aligned, rest["verts"], rest["faces"])
+    if garment.lbs_cache:
+        Path(garment.lbs_cache).parent.mkdir(parents=True, exist_ok=True)
+        binding.save(garment.lbs_cache)
+    return binding
+
+
+def _build_impl_real(person_image, smplx_params, garment, view, *, size, device, person_prep=None):
+    import cv2
+
+    from meshvton2.conditioning import camera as cam_mod
+    from meshvton2.conditioning.body import get_body_model
+    from meshvton2.conditioning.lbs_drape import apply_binding, push_clearance
+    from meshvton2.conditioning.render import render_appearance_ref, render_geometry, render_textured_scene
+
+    if person_image is not None and person_prep is None:
+        raise ValueError(
+            "Foto modunda person_prep zorunlu (PersonPreprocessor.process çıktısı) — "
+            "agnostic+mask oradan gelir; builder parser yüklemez."
+        )
+    hgt, wdt = size
+
+    # 1) Gövde + kamera (azimuth tahmini YOK: foto kamerası pred_cam'den, diğerleri orbit)
+    body_model = get_body_model()
+    body = body_model(smplx_params)
+    cam0 = cam_mod.photo_camera(smplx_params, size)
+    cam = cam0 if isinstance(view, PhotoView) else cam_mod.orbit_camera(cam0, body["pelvis"], view.azim_deg)
+
+    # 2) Drape: rest-binding (cache'li) -> pozlu gövdeye uygula -> clearance
+    binding = _get_binding(garment, body_model)
+    gverts = apply_binding(binding, body["verts"])
+    gverts, clearance_ratio = push_clearance(gverts, body["verts"], body["faces"])
+
+    # 3) Ekran-uzayı geometri + görünüm referansı
+    geo = render_geometry(body["verts"], body["faces"], gverts, garment.faces, cam, size=size)
+    appearance01 = render_appearance_ref(garment, size=size).astype(np.float32) / 255.0
+
+    depth_sil01 = np.stack([geo["depth"], geo["depth"], geo["garment_sil"].astype(np.float32)], axis=2)
+
+    meta: dict[str, Any] = {
+        "garment_id": garment.garment_id,
+        "clearance_ratio": clearance_ratio,
+        "view": "photo" if isinstance(view, PhotoView) else f"orbit:{view.azim_deg}",
+    }
+
+    # 4) Agnostic + maske
+    if person_image is None:  # sentetik mod: GT render'dan türet
+        skin = np.full((len(body["verts"]), 3), (0.80, 0.62, 0.52))
+        gt = render_textured_scene(body["verts"], body["faces"], skin, gverts, garment, cam, size=size)
+        kernel = np.ones((wdt // 30, wdt // 30), np.uint8)
+        mask_u8 = cv2.dilate((geo["garment_sil"] * 255).astype(np.uint8), kernel)
+        agnostic = gt.copy()
+        agnostic[mask_u8 > 127] = (128, 128, 128)
+        meta["gt_rgb"] = _to_tensor01(gt.astype(np.float32) / 255.0)
+    else:
+        agnostic = person_prep.agnostic
+        mask_u8 = person_prep.mask
+        if agnostic.shape[:2] != (hgt, wdt):
+            raise ValueError(f"person_prep boyutu {agnostic.shape[:2]} != hedef {(hgt, wdt)}")
+
+    return ConditioningBundle(
+        agnostic_rgb=_to_tensor01(agnostic.astype(np.float32) / 255.0),
+        inpaint_mask=torch.from_numpy((mask_u8 > 127).astype(np.float32)).unsqueeze(0),
+        control_normal=_to_tensor01(geo["normal"]),
+        control_depth_sil=_to_tensor01(depth_sil01),
+        appearance_ref=_to_tensor01(appearance01),
+        camera=cam,
+        meta=meta,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Stub implementasyonu (yalnız 3D bağımlılıksız test ortamı; bkz. assert_real_impl)
 # --------------------------------------------------------------------------- #
 
 
@@ -172,7 +298,7 @@ def _stable_seed(person_image, smplx_params, garment: GarmentAsset, view: ViewSp
     return int.from_bytes(h.digest()[:8], "little")
 
 
-def _build_impl(person_image, smplx_params, garment, view, *, size, device) -> ConditioningBundle:
+def _build_impl_stub(person_image, smplx_params, garment, view, *, size, device) -> ConditioningBundle:
     hgt, wdt = size
     gen = torch.Generator().manual_seed(_stable_seed(person_image, smplx_params, garment, view, size))
 
