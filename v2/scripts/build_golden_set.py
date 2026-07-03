@@ -42,11 +42,16 @@ def find_texture(garment_dir: Path) -> Path | None:
 
 
 def pick_garments(garments_root: Path, ids: list[str] | None) -> list[GoldenGarment]:
+    """Giysi klasörlerini ÖZYİNELEMELİ bulur (CLOTH3D düzeni: kategori/giysi/model.obj).
+    Otomatik seçimde upper_body öncelikli (plan: tops-first) ve texture şart."""
     out = []
     if ids:
         dirs = [garments_root / gid for gid in ids]
     else:
-        dirs = sorted(d for d in garments_root.iterdir() if d.is_dir() and list(d.glob("*.obj")))
+        all_dirs = sorted({p.parent for p in garments_root.rglob("*.obj")})
+        dirs = [d for d in all_dirs if "upper_body" in d.relative_to(garments_root).parts] + [
+            d for d in all_dirs if "upper_body" not in d.relative_to(garments_root).parts
+        ]
     for d in dirs:
         objs = sorted(d.glob("*.obj"))
         if not objs:
@@ -55,11 +60,13 @@ def pick_garments(garments_root: Path, ids: list[str] | None) -> list[GoldenGarm
         tex = find_texture(d)
         if tex is None and not ids:
             continue  # otomatik seçimde texturesiz giysi golden set'e giremez
+        rel = d.relative_to(garments_root)
         out.append(
             GoldenGarment(
-                id=d.name,
+                id=str(rel).replace("/", "__"),  # dosya adlarında kullanılır, / olamaz
                 mesh=str(objs[0].relative_to(garments_root)),
                 texture=str(tex.relative_to(garments_root)) if tex else None,
+                category=rel.parts[0] if len(rel.parts) > 1 else "top",
             )
         )
         if len(out) == NUM_GARMENTS and not ids:
