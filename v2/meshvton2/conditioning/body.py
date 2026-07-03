@@ -132,8 +132,24 @@ class SMPLXBody:
 
         self.torch = torch
         self.device = device
+        # Esnek yol çözümü: smplx paketi <dir>/smplx/SMPLX_*.npz düzeni bekler ama
+        # kullanıcı Drive'ı dosyaları düz klasöre koyar — ikisini de destekle.
+        from pathlib import Path
+
+        p = Path(model_dir)
+        fname = f"SMPLX_{gender.upper()}.npz"
+        model_path = model_dir
+        for cand in (p / fname, p / "smplx" / fname):
+            if cand.exists():
+                model_path = str(cand)  # smplx.create dosya yolunu da kabul eder
+                break
+        else:
+            if not p.exists():
+                raise FileNotFoundError(
+                    f"SMPL-X modeli yok: {p} — SMPLX_MODEL_DIR'i {fname} içeren klasöre ayarlayın."
+                )
         self.model = smplx.create(
-            model_dir, model_type="smplx", gender=gender, use_pca=False, batch_size=1
+            model_path, model_type="smplx", gender=gender, use_pca=False, batch_size=1
         ).to(device)
         self.faces = np.asarray(self.model.faces, dtype=np.int64)
 

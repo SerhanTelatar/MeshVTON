@@ -34,9 +34,21 @@ def _a_pose(rng: np.random.RandomState) -> np.ndarray:
 
 
 def load_pose_bank(poses_file: str | Path | None) -> np.ndarray | None:
+    """(N,63) .npy dosyası VEYA body_pose içeren .npz'lerden oluşan klasör
+    (v1'in smplx_params çıktısı — extract_smplx.py kişi başına .npz yazar)."""
     if poses_file is None:
         return None
-    arr = np.load(poses_file)
+    p = Path(poses_file)
+    if p.is_dir():
+        poses = []
+        for f in sorted(p.glob("*.npz")):
+            d = np.load(f)
+            if "body_pose" in d and d["body_pose"].reshape(-1).shape[0] == 63:
+                poses.append(d["body_pose"].reshape(63))
+        if not poses:
+            raise ValueError(f"{p} içinde body_pose'lu .npz yok")
+        return np.stack(poses).astype(np.float32)
+    arr = np.load(p)
     if arr.ndim != 2 or arr.shape[1] != 63:
         raise ValueError(f"poses_file (N,63) olmalı, gelen {arr.shape}")
     return arr.astype(np.float32)
