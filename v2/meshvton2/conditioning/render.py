@@ -312,3 +312,26 @@ def render_textured_scene(
     finally:
         r.delete()
     return np.asarray(color[..., :3], dtype=np.uint8)
+
+
+def render_body_mask(
+    body_verts: np.ndarray,
+    body_faces: np.ndarray,
+    camera: CameraSpec,
+    *,
+    size: tuple[int, int] = (1024, 768),
+) -> np.ndarray:
+    """Yalnız gövde silüeti (H,W) bool — kamera doğrulama (reprojection IoU) için."""
+    os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
+    import pyrender
+
+    h, w = size
+    scene = _flat_scene(pyrender)
+    _add_colored(pyrender, scene, body_verts, body_faces, np.ones((len(body_verts), 3)))
+    scene.add(_intrinsics_camera(camera, pyrender), pose=_cv_pose_to_gl(camera))
+    r = pyrender.OffscreenRenderer(w, h)
+    try:
+        _, depth = r.render(scene, flags=pyrender.RenderFlags.FLAT)
+    finally:
+        r.delete()
+    return depth > 0
