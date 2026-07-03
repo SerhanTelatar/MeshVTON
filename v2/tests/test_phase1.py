@@ -74,3 +74,32 @@ def test_find_sibling_texture(tmp_path):
     assert find_sibling_texture(obj).endswith("random.png")  # klasördeki tek görüntü
     (tmp_path / "model.png").write_bytes(b"x")
     assert find_sibling_texture(obj).endswith("model.png")  # aynı ad öncelikli
+
+
+def test_pick_garments_nested_categories(tmp_path):
+    """CLOTH3D Drive düzeni: garments_3d/kategori/giysi/model.obj (+texture)."""
+    import importlib.util
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        "build_golden_set", Path(__file__).parents[1] / "scripts" / "build_golden_set.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    (tmp_path / "upper_body/g1").mkdir(parents=True)
+    (tmp_path / "upper_body/g1/model.obj").write_text("v 0 0 0\n")
+    (tmp_path / "upper_body/g1/tex.png").write_bytes(b"x")
+    (tmp_path / "dresses/g2").mkdir(parents=True)
+    (tmp_path / "dresses/g2/model.obj").write_text("v 0 0 0\n")  # texturesiz → otomatikte elenir
+    (tmp_path / "dresses/g3").mkdir(parents=True)
+    (tmp_path / "dresses/g3/model.obj").write_text("v 0 0 0\n")
+    (tmp_path / "dresses/g3/g3.png").write_bytes(b"x")
+
+    picked = mod.pick_garments(tmp_path, None)
+    ids = [g.id for g in picked]
+    assert "upper_body__g1" in ids and "dresses__g3" in ids
+    assert "dresses__g2" not in ids                      # texture yok
+    assert ids[0] == "upper_body__g1"                    # upper_body öncelikli
+    g1 = picked[ids.index("upper_body__g1")]
+    assert g1.mesh == "upper_body/g1/model.obj" and g1.category == "upper_body"
