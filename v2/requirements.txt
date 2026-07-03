@@ -1,0 +1,25 @@
+# MeshVTON v2 — v1'den TAMAMEN bağımsız ortam (v1 pinleriyle asla karıştırma).
+# Python >= 3.10. Colab'da: pip install -r v2/requirements.txt
+torch>=2.4
+torchvision
+diffusers>=0.34
+transformers>=4.46
+peft>=0.14
+accelerate>=1.2
+safetensors
+sentencepiece
+protobuf
+numpy
+opencv-python
+Pillow
+scikit-image>=0.22
+lpips
+einops
+pyyaml
+tqdm
+pytest
+
+# --- 3D bağımlılıkları (CUDA gerektirir, ayrı kurulum; Faz 2+) ---
+# pip install "git+https://github.com/facebookresearch/pytorch3d.git"
+# pip install smplx>=0.1.28 trimesh>=4
+# pip install "git+https://github.com/shubham-goel/4D-Humans.git"   # HMR2

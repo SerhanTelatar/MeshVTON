@@ -1,0 +1,30 @@
+# MeshVTON v2 temel config — tüm scriptler önce bunu yükler, stage config'leri üzerine biner.
+seed: 42
+
+# TEK ve SABİT çözünürlük. Başka çözünürlük hiçbir yerde kullanılmaz (v1 512x384/512x512 ikiliği dersi).
+resolution:
+  height: 1024
+  width: 768
+
+device: cuda
+
+paths:
+  data_root: v2/data
+  vitonhd_root: v2/data/vitonhd        # raw VITON-HD (train/ test/)
+  garments_root: data/garments_3d      # CLOTH3D meshleri (v1 ile ortak, salt-okunur)
+  synth_root: v2/data/synth
+  golden_root: v2/data/golden
+  checkpoints: v2/checkpoints
+  eval_results: v2/eval_results
+
+model:
+  flux_fill_repo: black-forest-labs/FLUX.1-Fill-dev
+  flux_kontext_repo: black-forest-labs/FLUX.1-Kontext-dev
+  dtype: bfloat16
+  prompt: "a person wearing the garment, fashion photography"  # sabit; text embed'ler precompute edilir
+  lora:
+    rank: 64
+    alpha: 64
+  control:
+    # x_embedder'a zero-init kolonlarla eklenen kontrol görüntüleri (RGB YOK — v1 halüsinasyon dersi):
+    images: [normal, depth_sil]

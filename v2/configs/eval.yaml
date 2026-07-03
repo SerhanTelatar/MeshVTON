@@ -1,0 +1,20 @@
+# Eval harness config.
+golden_manifest: v2/data/golden/manifest.json
+angles: [0, 90, 180, 270]
+
+# Tahmin dosyası adlandırma sözleşmesi (pred-dir içinde):
+#   {person_id}_{garment_id}_{angle:03d}.png
+# Opsiyonel yardımcı dosyalar aynı dizinde, aynı gövde adıyla:
+#   {stem}.person.png  — orijinal kişi fotoğrafı (identity-koruma metrikleri için)
+#   {stem}.mask.png    — inpaint maskesi (1=giysi bölgesi)
+#   {stem}.sil.png     — koşullamadaki giysi silüeti
+#   {stem}.ref.png     — dokulu görünüm referansı (appearance ref)
+#   {stem}.gt.png      — ground truth (yalnız sentetik holdout'ta var)
+pred_pattern: "{person_id}_{garment_id}_{angle:03d}.png"
+
+# Faz kapıları (scripts/eval.py raporda bunlarla karşılaştırır):
+thresholds:
+  phase2_camera_iou: 0.70          # SMPL-X reprojeksiyon vs parser maskesi
+  phase5_backview_lpips_gain: 0.20 # 180° giysi-LPIPS iyileşmesi (Aşama-1'e karşı)
+  phase5_delta_e_std: 5.0          # görüşler-arası giysi ΔE std
+  phase5_frontview_regression: 0.03

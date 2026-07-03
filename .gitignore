@@ -31,6 +31,8 @@ Thumbs.db
 # --- Project Data (large files) ---
 checkpoints/
 /data/
+v2/data/
+v2/eval_results/
 outputs/
 results/
 wandb/
