@@ -19,7 +19,11 @@ pyyaml
 tqdm
 pytest
 
-# --- 3D bağımlılıkları (CUDA gerektirir, ayrı kurulum; Faz 2+) ---
-# pip install "git+https://github.com/facebookresearch/pytorch3d.git"
-# pip install smplx>=0.1.28 trimesh>=4
+# --- 3D: Faz 1 (hafif, derleme yok) ---
+trimesh>=4
+pyrender          # appearance-ref render backend'i (EGL headless; pytorch3d GEREKMEZ)
+
+# --- 3D: Faz 2+ (CUDA gerektirir, ayrı kurulum) ---
+# pip install "git+https://github.com/facebookresearch/pytorch3d.git"   # derleme ~20-40 dk
+# pip install smplx>=0.1.28
 # pip install "git+https://github.com/shubham-goel/4D-Humans.git"   # HMR2
