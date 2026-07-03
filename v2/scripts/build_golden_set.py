@@ -75,6 +75,11 @@ def pick_garments(garments_root: Path, ids: list[str] | None) -> list[GoldenGarm
 
 
 def pick_persons(test_dir: Path, list_file: Path | None) -> list[Path]:
+    if not test_dir.exists():
+        raise SystemExit(
+            f"HATA: kişi görüntü dizini yok: {test_dir}\n"
+            "Colab diski oturum başına sıfırlanır — önce VERİ hücresini (zip açma) çalıştırın."
+        )
     if list_file and list_file.exists():
         return [test_dir / line.strip() for line in list_file.read_text().splitlines() if line.strip()]
     exts = {".jpg", ".jpeg", ".png"}
