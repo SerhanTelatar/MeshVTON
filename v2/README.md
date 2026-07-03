@@ -22,8 +22,11 @@ sürümleri uyumsuz — ayrı ortam, ayrı runtime).
 - [~] Faz 1 — zero-shot taban çizgisi: kod hazır (`fill_spatial` + `kontext` varyantları),
       Colab koşusu bekliyor → `notebooks/MeshVTON2.ipynb`. Not: üçüncü varyant
       (eğitimsiz ref-token) Faz 4'e ertelendi — gerekçe `model/flux_tryon.py` docstring'inde.
-- [ ] Faz 2 — geometri hattı (HMR2 pred_cam kamerası + LBS drape + gerçek builder)
-- [ ] Faz 3 — sentetik multi-view veri (PyTorch3D)
+- [~] Faz 2 — geometri hattı: kod tamam (pred_cam kamerası, LBS drape, ekran-uzayı
+      render, gerçek builder — hepsi pyrender, pytorch3d gerekmez); Colab doğrulaması
+      bekliyor (reprojection IoU ≥ 0.70 + drape QA sheet)
+- [~] Faz 3 — sentetik multi-view veri: üretici hazır (`scripts/generate_synthetic.py`,
+      dizin sözleşmesi testli); Colab'da küçük parti + QA bekliyor
 - [ ] Faz 4 — Aşama-1 eğitim (tek görüş: LoRA + zero-init kontrol kolonları)
 - [ ] Faz 5 — Aşama-2 eğitim (multi-view tutarlılık)
 - [ ] Faz 6 — Blender veri v2 + inference sertleştirme
