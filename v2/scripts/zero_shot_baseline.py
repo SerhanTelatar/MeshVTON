@@ -102,6 +102,10 @@ def main() -> int:
         except Exception as e:  # tek kombo hatası koşuyu öldürmesin, ama SAKLANMASIN
             failed.append(f"{person.id}×{garment.id}: {e}")
             print(f"[{i+1}/{len(combos)}] HATA {person.id}×{garment.id}: {e}", file=sys.stderr)
+            if len(failed) == 1:  # ilk hatanın tam traceback'i — teşhis için
+                import traceback
+
+                traceback.print_exc(file=sys.stderr)
 
     # Değerlendirme + grid
     summary = harness.evaluate(manifest, pred_dir, cfg["pred_pattern"])
