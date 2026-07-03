@@ -77,7 +77,12 @@ def pick_garments(garments_root: Path, ids: list[str] | None) -> list[GoldenGarm
 def pick_persons(test_dir: Path, list_file: Path | None) -> list[Path]:
     if list_file and list_file.exists():
         return [test_dir / line.strip() for line in list_file.read_text().splitlines() if line.strip()]
-    images = sorted(p for p in test_dir.iterdir() if p.suffix.lower() in {".jpg", ".png"})
+    exts = {".jpg", ".jpeg", ".png"}
+    images = sorted(p for p in test_dir.iterdir() if p.suffix.lower() in exts)
+    if not images:  # iç içe zip düzenleri: kök boşsa özyinelemeli ara
+        images = sorted(p for p in test_dir.rglob("*") if p.suffix.lower() in exts)
+        if images:
+            print(f"NOT: görüntüler alt klasörde bulundu: {images[0].parent}", file=sys.stderr)
     step = max(1, len(images) // NUM_PERSONS)
     picked = images[::step][:NUM_PERSONS]
     print(
