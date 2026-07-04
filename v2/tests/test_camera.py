@@ -115,3 +115,13 @@ def test_project_behind_camera_is_nan():
 def test_camera_spec_serializable():
     cam = photo_camera(_params(), SIZE)
     assert CameraSpec.from_dict(cam.to_dict()) == cam
+
+
+def test_detect_person_bbox_is_square_and_centered():
+    """HMR2 kare crop bekler — dikdörtgen bbox oran bozup kamerayı kaydırıyordu."""
+    from meshvton2.conditioning.body import detect_person_bbox
+
+    bbox = detect_person_bbox(np.zeros((1024, 768, 3), np.uint8))
+    x0, y0, x1, y1 = bbox
+    assert (x1 - x0) == (y1 - y0) == 1024  # kare, kenar = max(H,W)
+    assert (x0 + x1) / 2 == pytest.approx(384) and (y0 + y1) / 2 == pytest.approx(512)
