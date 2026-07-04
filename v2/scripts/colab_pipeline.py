@@ -191,10 +191,21 @@ def main() -> int:
     if active("synth"):
         banner(f"4/8 tam sentetik üretim (hedef {args.num} YAZILMIŞ örnek × 4 görüş)")
         count = lambda: sum(1 for _ in synth_dir.glob("s*_*/")) if synth_dir.exists() else 0
+
+        def _version_ok() -> bool:
+            vf = synth_dir / "DATA_VERSION"
+            return vf.exists() and vf.read_text().strip() == "2"
+
         existing = count()
         if existing < args.num:
             restore_from_drive("synth_data.zip", synth_dir.parent)
             existing = count()
+        if existing and not _version_ok():
+            print("UYARI: mevcut/arşiv sentetik veri ESKİ SÜRÜM (bozuk drape dönemi) — "
+                  "siliniyor ve sıfırdan üretilecek.")
+            shutil.rmtree(synth_dir, ignore_errors=True)
+            (DRIVE_OUT / "synth_data.zip").unlink(missing_ok=True)
+            existing = 0
         # PARÇALI + PARALEL üretim: her parça sonrası Drive arşivi (kopma en fazla
         # bir parça götürür); çok çekirdekli makinede (A100 VM ~12 vCPU) işçiler
         # paralel — üretim CPU-bound, GPU değil.

@@ -26,6 +26,9 @@ from meshvton2.conditioning.builder import ConditioningBundle, GarmentAsset, Orb
 from meshvton2.synth.bodies import load_pose_bank, sample_identity
 
 VIEWS = (0, 90, 180, 270)
+# Veri sözleşmesi/drape hattı değişince ARTIR — pipeline eski sürüm arşivini tanıyıp siler
+# (v1 damgasız bozuk arşiv, düzeltilmiş koşuya sessizce geri yüklenmişti)
+DATA_VERSION = "2"
 DEPTH_REJECT = 0.03   # ortalama penetrasyon derinliği [m]: mm=normal temas, 3cm+=yanlış yerleşim
 EXTENT_REJECT = 1.5   # giysi/gövde bbox-diyagonal oranı üst sınırı (patlama kapısı)
 # NOT: "itilen vertex oranı" (clearance_ratio) artık RED kriteri DEĞİL — oturan
@@ -87,6 +90,7 @@ def generate(
     """-> {written, rejected, failed}. pairs.csv'ye ekler (append, header'lı ilk yazım)."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "DATA_VERSION").write_text(DATA_VERSION)
     rng = np.random.RandomState(seed)
     pose_bank = load_pose_bank(poses_file)
     pairs_path = out_dir / "pairs.csv"
