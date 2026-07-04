@@ -178,8 +178,8 @@ class SMPLXBody:
                 return_verts=True,
             )
         verts = out.vertices[0].cpu().numpy().astype(np.float64)
-        pelvis = out.joints[0, 0].cpu().numpy().astype(np.float64)
-        return {"verts": verts, "faces": self.faces, "pelvis": pelvis}
+        joints = out.joints[0, :22].cpu().numpy().astype(np.float64)  # SMPL gövde eklemleri
+        return {"verts": verts, "faces": self.faces, "pelvis": joints[0], "joints": joints}
 
     def rest(self) -> dict:
         """Varsayılan rest gövde (β=0, θ=0) — giysi bağlama (binding) referansı.

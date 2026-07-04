@@ -27,6 +27,7 @@ from meshvton2.synth.bodies import load_pose_bank, sample_identity
 
 VIEWS = (0, 90, 180, 270)
 CLEARANCE_REJECT = 0.02
+EXTENT_REJECT = 1.5  # drape edilmiş giysi / gövde bbox-diyagonal oranı üst sınırı (patlama kapısı)
 
 
 def _save_png(path: Path, arr: np.ndarray) -> None:
@@ -95,7 +96,8 @@ def generate(
         if new_header:
             wcsv.writerow(["sample_id", "garment_id"])
         for i in range(num_samples):
-            asset = garment_assets[i % len(garment_assets)]
+            # seed ofseti: paralel işçiler aynı giysi sırasını üretmesin
+            asset = garment_assets[(i + seed) % len(garment_assets)]
             params = sample_identity(rng, size, pose_bank)
             sample_id = f"s{seed:03d}_{i:06d}"
             try:
@@ -107,10 +109,12 @@ def generate(
                 failed.append(f"{sample_id}: {e}")
                 log(f"[{i+1}/{num_samples}] HATA {sample_id}: {e}")
                 continue
-            cr = bundles[VIEWS[0]].meta.get("clearance_ratio") or 0.0
-            if cr > clearance_reject:
+            meta0 = bundles[VIEWS[0]].meta
+            cr = meta0.get("clearance_ratio") or 0.0
+            er = meta0.get("drape_extent_ratio") or 0.0
+            if cr > clearance_reject or er > EXTENT_REJECT:
                 rejected += 1
-                log(f"[{i+1}/{num_samples}] RED {sample_id}: clearance_ratio={cr:.3f}")
+                log(f"[{i+1}/{num_samples}] RED {sample_id}: clearance={cr:.3f} extent={er:.2f}")
                 continue
             write_sample(out_dir, sample_id, bundles, params)
             wcsv.writerow([sample_id, asset.garment_id])
