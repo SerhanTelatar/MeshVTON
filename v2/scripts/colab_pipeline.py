@@ -44,6 +44,37 @@ def run(cmd: list[str], gate: bool = False) -> int:
     return rc
 
 
+def archive_to_drive(src_dir: Path, zip_name: str) -> None:
+    """Üretilen veri setini Drive'a STORE zip'i olarak arşivle (PNG zaten sıkışık,
+    hız için sıkıştırma yok). Colab diski oturumla ölür — bu, sonraki oturumun
+    veriyi yeniden üretmemesinin tek yolu."""
+    if not DRIVE_OUT.parent.parent.exists() or not src_dir.exists():
+        return
+    import zipfile
+
+    DRIVE_OUT.mkdir(parents=True, exist_ok=True)
+    dst = DRIVE_OUT / zip_name
+    tmp = dst.with_suffix(".zip.part")
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_STORED) as z:
+        for f in src_dir.rglob("*"):
+            if f.is_file():
+                z.write(f, f.relative_to(src_dir.parent))
+    tmp.rename(dst)
+    print(f"→ arşivlendi: {dst} ({dst.stat().st_size / 1e9:.1f} GB)", flush=True)
+
+
+def restore_from_drive(zip_name: str, target_parent: Path) -> bool:
+    zpath = DRIVE_OUT / zip_name
+    if not zpath.exists():
+        return False
+    import zipfile
+
+    print(f"Drive arşivinden geri yükleniyor: {zpath}", flush=True)
+    with zipfile.ZipFile(zpath) as z:
+        z.extractall(target_parent)
+    return True
+
+
 def sync_drive(*paths: Path) -> None:
     if not DRIVE_OUT.parent.parent.exists():  # drive mount edilmemiş
         return
@@ -133,7 +164,8 @@ def main() -> int:
     # ---- 3. smoke + QA ----
     if active("smoke"):
         banner("3/8 sentetik duman testi + QA sheet")
-        if not (synth_dir / "pairs.csv").exists():
+        # pairs.csv değil ÖRNEK sayısına bak: başarısız koşu header'lı boş csv bırakabilir
+        if not any(synth_dir.glob("s*_*/")):
             run(["python", "v2/scripts/generate_synthetic.py", "--garments", str(args.garments),
                  "--poses", str(args.poses), "--num", "5", "--limit-garments", "3"], gate=True)
         qa = REPO / "v2/eval_results/synth_qa"
@@ -148,17 +180,23 @@ def main() -> int:
     if active("synth"):
         banner(f"4/8 tam sentetik üretim ({args.num} örnek × 4 görüş)")
         existing = sum(1 for _ in synth_dir.glob("s*_*/")) if synth_dir.exists() else 0
+        if existing < args.num and restore_from_drive("synth_data.zip", synth_dir.parent):
+            existing = sum(1 for _ in synth_dir.glob("s*_*/"))
         if existing >= args.num:
             print(f"zaten {existing} örnek var, atlanıyor")
         else:
             run(["python", "v2/scripts/generate_synthetic.py", "--garments", str(args.garments),
                  "--poses", str(args.poses), "--num", str(args.num - existing),
                  "--seed", str(existing)], gate=True)
+            archive_to_drive(synth_dir, "synth_data.zip")  # oturum ölürse veri Drive'da yaşar
         sync_drive(synth_dir / "pairs.csv")
 
     # ---- 5. vitonhd ----
     if active("vitonhd"):
         banner("5/8 VITON-HD ön-işleme")
+        items_dir = REPO / "v2/data/vitonhd_items"
+        if not items_dir.exists():
+            restore_from_drive("vitonhd_items.zip", items_dir.parent)
         if not args.cloth.exists():
             print(f"UYARI: {args.cloth} yok (VITON-HD cloth/ ürün fotoğrafları) — "
                   "gerçek veri ATLANIYOR; eğitim sentetik-only olur (domain-gap riski).")
@@ -166,6 +204,7 @@ def main() -> int:
             run(["python", "v2/scripts/preprocess_vitonhd.py", "--images", str(args.images),
                  "--cloth", str(args.cloth), "--idm-repo", str(args.idm_repo),
                  "--limit", str(args.vitonhd_limit)], gate=False)
+            archive_to_drive(items_dir, "vitonhd_items.zip")
 
     # ---- 6. baseline ----
     if active("baseline") and can_train:
