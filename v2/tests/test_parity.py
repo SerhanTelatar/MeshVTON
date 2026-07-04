@@ -144,30 +144,29 @@ def test_garment_none_real_data_mode():
         build_conditioning(None, smplx_params, None, OrbitView(0), size=SIZE, appearance_ref_image=ref)
 
 
-def test_prealign_garment_joint_based():
-    """Ölçek eklemlerden gelir (T-poz kulaç açıklığı DEĞİL — patlama bug'ı) ve
-    üst giyim göğüs hizasına oturur."""
+def test_prealign_garment_no_rescale_hang_anchor():
+    """CLOTH3D metrik ölçeği KORUNUR (iki ölçekleme heuristik'i de QA'da patladı);
+    üst giyim omuzdan, alt giyim belden asılır; x/z pelvise ortalanır."""
     from meshvton2.conditioning.builder import _prealign_garment
 
     j = np.zeros((22, 3))
-    j[0] = [0, 0, 0]                       # pelvis
-    j[1], j[2] = [-0.09, -0.05, 0], [0.09, -0.05, 0]   # kalçalar
-    j[4], j[5] = [-0.10, -0.45, 0], [0.10, -0.45, 0]   # dizler
-    j[16], j[17] = [-0.18, 0.50, 0], [0.18, 0.50, 0]   # omuzlar
+    j[0] = [0.1, 0, 0.05]                              # pelvis (kasıtlı ofsetli)
+    j[16], j[17] = [-0.08, 0.50, 0], [0.28, 0.50, 0]   # omuzlar (mid_sh y=0.5)
     rest = {"joints": j}
 
+    # Z-up "tişört": x genişlik 0.6, y derinlik 0.24, z boy 0.5 (metre)
     rng = np.random.RandomState(0)
-    g = rng.uniform(-1, 1, (200, 3))  # kaba küp giysi, Z-up varsayımıyla
+    g = rng.uniform(-1, 1, (300, 3)) * [0.3, 0.12, 0.25]
     out = _prealign_garment(g, rest, "upper_body__X_Tshirt")
 
-    horiz = max(out[:, 0].max() - out[:, 0].min(), out[:, 2].max() - out[:, 2].min())
-    shoulder_w = 0.36
-    assert horiz == pytest.approx(1.55 * shoulder_w, rel=0.05)  # kulaç (T-poz) değil omuz ölçeği
-    target_y = 0.72 * 0.50  # pelvis + 0.72*(mid_sh - pelvis)
-    assert out.mean(axis=0)[1] == pytest.approx(target_y, abs=0.02)
+    # ölçek korunmuş: yatay genişlik hâlâ ~0.6 (Z-up→Y-up sonrası x aynı kalır)
+    assert (out[:, 0].max() - out[:, 0].min()) == pytest.approx(g[:, 0].max() - g[:, 0].min(), rel=1e-9)
+    # askı: üst kenar = omuz + 0.06
+    assert out[:, 1].max() == pytest.approx(0.56, abs=1e-9)
+    # x/z pelvise ortalı
+    assert (out[:, 0].max() + out[:, 0].min()) / 2 == pytest.approx(0.1, abs=1e-9)
+    assert (out[:, 2].max() + out[:, 2].min()) / 2 == pytest.approx(0.05, abs=1e-9)
 
-    # alt giyim bacaklara iner, elbise gövde ortasına
+    # alt giyim belden asılır (üst kenar = pelvis_y + 0.06)
     low = _prealign_garment(g, rest, "lower_body__X_Trousers")
-    assert low.mean(axis=0)[1] < 0  # pelvis altı
-    dress = _prealign_garment(g, rest, "dresses__X_Dress")
-    assert 0 < dress.mean(axis=0)[1] < target_y
+    assert low[:, 1].max() == pytest.approx(0.06, abs=1e-9)

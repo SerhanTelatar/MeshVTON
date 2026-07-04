@@ -195,38 +195,27 @@ def _to_tensor01(img01: np.ndarray) -> torch.Tensor:
 
 
 def _prealign_garment(gverts: np.ndarray, rest: dict, garment_id: str = "") -> np.ndarray:
-    """Bağlama öncesi kaba hizalama — EKLEM tabanlı (yön/poz bağımsız).
+    """Bağlama öncesi hizalama: ÖLÇEK YOK, sadece eksen çevir + askı hizala.
 
-    İlk sürüm gövde x-genişliğine ölçekliyordu; rest gövde T-POZUNDA olduğundan
-    'genişlik' kulaç açıklığıydı (~1.7m) → giysi 3 kat şişip patlıyordu (QA'da
-    yakalandı). Şimdi: ölçek omuz/kalça eklem mesafesinden, yerleşim kategoriye
-    göre eklemler arasında (üst→göğüs, elbise→gövde ortası, alt→bacaklar)."""
+    Ders zinciri (QA'da yakalandı): (1) gövde-genişliği ölçeği T-poz kulaç
+    açıklığını ölçüp giysiyi 3x şişirdi; (2) omuz-heuristik ölçeği ise zaten
+    DOĞRU ölçekli CLOTH3D giysisini küçültüp gövdenin içine soktu (clearance
+    ~0.9). Gerçek: CLOTH3D giysileri metre ölçeğinde ve SMPL bedenine göre
+    modelli — yeniden ölçekleme her durumda hataydı. Şimdi: Z-up→Y-up çevir,
+    x/z'yi pelvise ortala, dikeyde 'askı' hizala: üst/elbise omuzdan asılır
+    (üst kenar ≈ omuz hizası + pay), alt giyim belden (üst kenar ≈ pelvis + pay)."""
     from meshvton2.conditioning.render import zup_to_yup
 
     j = rest["joints"]
-    pelvis, l_hip, r_hip = j[0], j[1], j[2]
-    l_knee, r_knee = j[4], j[5]
-    l_sh, r_sh = j[16], j[17]
-    mid_sh = (l_sh + r_sh) / 2.0
-    mid_knee = (l_knee + r_knee) / 2.0
-    shoulder_w = np.linalg.norm(l_sh - r_sh)
-    hip_w = np.linalg.norm(l_hip - r_hip)
+    pelvis = j[0]
+    mid_sh = (j[16] + j[17]) / 2.0
 
-    if "lower_body" in garment_id:
-        target = (pelvis + mid_knee) / 2.0
-        want_width = 2.4 * hip_w
-    elif "dress" in garment_id.lower():
-        target = pelvis + 0.30 * (mid_sh - pelvis)
-        want_width = 1.65 * shoulder_w
-    else:  # üst giyim (varsayılan)
-        target = pelvis + 0.72 * (mid_sh - pelvis)
-        want_width = 1.55 * shoulder_w
-
-    g = zup_to_yup(np.asarray(gverts, np.float64))
-    g -= g.mean(axis=0)
-    horiz = max(g[:, 0].max() - g[:, 0].min(), g[:, 2].max() - g[:, 2].min())
-    g *= want_width / max(horiz, 1e-8)
-    return g + target
+    g = zup_to_yup(np.asarray(gverts, np.float64))  # metrik ölçek KORUNUR
+    g[:, 0] += pelvis[0] - (g[:, 0].max() + g[:, 0].min()) / 2.0
+    g[:, 2] += pelvis[2] - (g[:, 2].max() + g[:, 2].min()) / 2.0
+    hang_y = (pelvis[1] + 0.06) if "lower_body" in garment_id else (mid_sh[1] + 0.06)
+    g[:, 1] += hang_y - g[:, 1].max()  # rest gövde y-YUKARI: üst kenar = max(y)
+    return g
 
 
 def _get_binding(garment: GarmentAsset, body_model) -> "GarmentBinding":  # noqa: F821
@@ -280,7 +269,7 @@ def _build_impl_real(
         # 2) Drape: rest-binding (cache'li) -> pozlu gövdeye uygula -> clearance
         binding = _get_binding(garment, body_model)
         gverts = apply_binding(binding, body["verts"])
-        gverts, clearance_ratio = push_clearance(gverts, body["verts"], body["faces"])
+        gverts, clearance_ratio, pen_depth = push_clearance(gverts, body["verts"], body["faces"])
         # Patlama dedektörü: drape edilmiş giysi gövdeden ne kadar büyük?
         # (clearance bunu YAKALAYAMAZ — patlayan giysi gövdenin dışındadır;
         # QA'da 3-4x boyutlu parçalanmış giysi görüldü, bu metrik onun kapısı)
@@ -292,7 +281,7 @@ def _build_impl_real(
         garment_sil = geo["garment_sil"].astype(np.float32)
         appearance01 = render_appearance_ref(garment, size=size).astype(np.float32) / 255.0
         meta.update(garment_id=garment.garment_id, clearance_ratio=clearance_ratio,
-                    drape_extent_ratio=extent_ratio)
+                    penetration_depth=pen_depth, drape_extent_ratio=extent_ratio)
     else:
         # Gerçek-veri modu: gövde-only geometri; giysi silüeti PARSE'tan,
         # görünüm referansı ürün fotoğrafından (süpervizyon tutarlılığı).

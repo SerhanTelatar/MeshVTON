@@ -78,21 +78,21 @@ def test_radial_scale_follows():
 
 
 def test_push_clearance():
-    """İçeri gömülen giysi vertex'i clearance mesafesine itilir."""
+    """İçeri gömülen giysi vertex'i clearance mesafesine itilir; derinlik raporlanır."""
     sunk = GARMENT.copy()
-    sunk[:, [0, 2]] *= 0.9 / 1.05  # yarıçapı gövdenin İÇİNE çek
-    fixed, ratio = push_clearance(sunk, BODY_V, BODY_F, clearance=0.02)
+    sunk[:, [0, 2]] *= 0.9 / 1.05  # yarıçapı gövdenin İÇİNE çek (~0.15 derinlik)
+    fixed, ratio, depth = push_clearance(sunk, BODY_V, BODY_F, clearance=0.02)
     assert ratio > 0.9  # nerdeyse hepsi düzeltildi
+    assert 0.05 < depth < 0.3  # ortalama penetrasyon ~0.14m (derin gömülme sinyali)
     n = vertex_normals(BODY_V, BODY_F)
-    # düzeltme sonrası en yakın gövde noktasına göre işaretli mesafe >= clearance-ish
     from meshvton2.conditioning.lbs_drape import _knn
 
     idx, _ = _knn(fixed, BODY_V, 1)
     signed = ((fixed - BODY_V[idx[:, 0]]) * n[idx[:, 0]]).sum(1)
     assert (signed > 0.019).all()
-    # dışarıda olan vertex'lere dokunulmaz
-    ok, ratio0 = push_clearance(GARMENT, BODY_V, BODY_F, clearance=0.02)
-    assert ratio0 < 0.05 and np.abs(ok - GARMENT).max() < 1e-12 or ratio0 < 0.05
+    # dışarıda olan vertex'lere dokunulmaz, derinlik ~0
+    _, ratio0, depth0 = push_clearance(GARMENT, BODY_V, BODY_F, clearance=0.02)
+    assert ratio0 < 0.05 and depth0 < 0.01
 
 
 def test_binding_save_load_roundtrip(tmp_path):

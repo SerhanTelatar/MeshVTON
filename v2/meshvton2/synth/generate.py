@@ -26,8 +26,10 @@ from meshvton2.conditioning.builder import ConditioningBundle, GarmentAsset, Orb
 from meshvton2.synth.bodies import load_pose_bank, sample_identity
 
 VIEWS = (0, 90, 180, 270)
-CLEARANCE_REJECT = 0.02
-EXTENT_REJECT = 1.5  # drape edilmiş giysi / gövde bbox-diyagonal oranı üst sınırı (patlama kapısı)
+DEPTH_REJECT = 0.03   # ortalama penetrasyon derinliği [m]: mm=normal temas, 3cm+=yanlış yerleşim
+EXTENT_REJECT = 1.5   # giysi/gövde bbox-diyagonal oranı üst sınırı (patlama kapısı)
+# NOT: "itilen vertex oranı" (clearance_ratio) artık RED kriteri DEĞİL — oturan
+# giyside teması olan vertex çoktur; bozukluk sinyali derinlik + boyut oranıdır.
 
 
 def _save_png(path: Path, arr: np.ndarray) -> None:
@@ -79,7 +81,7 @@ def generate(
     size: tuple[int, int] = (1024, 768),
     seed: int = 0,
     poses_file: str | None = None,
-    clearance_reject: float = CLEARANCE_REJECT,
+    depth_reject: float = DEPTH_REJECT,
     log=print,
 ) -> dict:
     """-> {written, rejected, failed}. pairs.csv'ye ekler (append, header'lı ilk yazım)."""
@@ -110,11 +112,11 @@ def generate(
                 log(f"[{i+1}/{num_samples}] HATA {sample_id}: {e}")
                 continue
             meta0 = bundles[VIEWS[0]].meta
-            cr = meta0.get("clearance_ratio") or 0.0
+            depth = meta0.get("penetration_depth") or 0.0
             er = meta0.get("drape_extent_ratio") or 0.0
-            if cr > clearance_reject or er > EXTENT_REJECT:
+            if depth > depth_reject or er > EXTENT_REJECT:
                 rejected += 1
-                log(f"[{i+1}/{num_samples}] RED {sample_id}: clearance={cr:.3f} extent={er:.2f}")
+                log(f"[{i+1}/{num_samples}] RED {sample_id}: derinlik={depth*100:.1f}cm extent={er:.2f}")
                 continue
             write_sample(out_dir, sample_id, bundles, params)
             wcsv.writerow([sample_id, asset.garment_id])
