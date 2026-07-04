@@ -43,10 +43,14 @@ def _patch_torch_load_weights_only(torch):
 
 
 def detect_person_bbox(image_rgb: np.ndarray) -> np.ndarray:
-    """Basit kişi bbox'ı: tam kare (VITON-HD tarzı tek kişi, tam boy çekimlerde
-    yeterli). Gerekirse Faz 3'te detektörle değiştirilir — imza sabit."""
+    """Görüntü merkezli KARE bbox (kenar = max(H,W); görüntü dışına taşabilir,
+    regress padding'le halleder). HMR2 kare crop bekler — dikdörtgen bbox'ı
+    256x256'ya oran bozarak ezmek pose/pred_cam'i sistematik kaydırıyordu
+    (kamera doğrulamasında soldan kayma, IoU 0.64-0.80 arası dalgalanma)."""
     h, w = image_rgb.shape[:2]
-    return np.array([0, 0, w, h], dtype=np.float32)
+    side = max(h, w)
+    cx, cy = w / 2.0, h / 2.0
+    return np.array([cx - side / 2, cy - side / 2, cx + side / 2, cy + side / 2], dtype=np.float32)
 
 
 def build_hmr2_backend(device: str = "cuda"):
@@ -78,8 +82,14 @@ def build_hmr2_backend(device: str = "cuda"):
     def regress(image_rgb: np.ndarray, bbox: np.ndarray | None = None) -> dict:
         if bbox is None:
             bbox = detect_person_bbox(image_rgb)
-        x0, y0, x1, y1 = (int(v) for v in bbox)
-        crop = image_rgb[y0:y1, x0:x1]
+        x0, y0, x1, y1 = (int(round(v)) for v in bbox)
+        h, w = image_rgb.shape[:2]
+        # bbox görüntü dışına taşarsa sıfırla doldur (kare crop garantisi)
+        pad_l, pad_t = max(0, -x0), max(0, -y0)
+        pad_r, pad_b = max(0, x1 - w), max(0, y1 - h)
+        crop = image_rgb[max(0, y0):min(h, y1), max(0, x0):min(w, x1)]
+        if any((pad_l, pad_t, pad_r, pad_b)):
+            crop = np.pad(crop, ((pad_t, pad_b), (pad_l, pad_r), (0, 0)))
         img = cv2.resize(crop, (HMR2_CROP, HMR2_CROP)).astype(np.float32) / 255.0
         img = (img - mean) / std
         t = torch.from_numpy(img).permute(2, 0, 1).unsqueeze(0).to(device)
