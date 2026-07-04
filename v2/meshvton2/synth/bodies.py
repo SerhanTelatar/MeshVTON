@@ -62,13 +62,16 @@ def sample_pose(rng: np.random.RandomState, pose_bank: np.ndarray | None) -> np.
 
 def fabricate_camera_params(rng: np.random.RandomState, size: tuple[int, int]) -> dict:
     """Sahte pred_cam+bbox: VITON-HD benzeri tam boy kadraj + hafif jitter.
-    global_orient=0 → kişi kameraya dönük (arka görünüm ORBIT ile alınır, gövde
-    döndürülerek değil — v2 kuralı)."""
+
+    global_orient = [π,0,0]: SMPL-X model uzayı y-YUKARI, kamera sözleşmemiz
+    y-AŞAĞI — gerçek fotoğraflarda bu dönüşü HMR2'nin global_orient'i taşır,
+    sentetikte biz taşırız (0 bırakınca gövde görüntüde BAŞ AŞAĞI çıkıyordu,
+    QA'da yakalandı). Kişi kameraya dönüktür; arka görünüm ORBIT ile alınır."""
     h, w = size
     return {
         "pred_cam": np.array([rng.uniform(0.85, 1.05), 0.0, rng.uniform(-0.02, 0.08)], np.float32),
         "bbox": np.array([0, 0, w, h], np.float32),
-        "global_orient": np.zeros(3, np.float32),
+        "global_orient": np.array([np.pi, 0.0, 0.0], np.float32),
         "transl": np.zeros(3, np.float32),
     }
 

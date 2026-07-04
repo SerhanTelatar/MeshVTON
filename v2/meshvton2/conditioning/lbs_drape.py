@@ -101,10 +101,16 @@ class GarmentBinding:
     body_faces: np.ndarray    # (Fb,3) normal hesapları için
 
     def save(self, path: str) -> None:
+        """Atomik yazım (tmp+rename): paralel işçiler aynı cache'i paylaşır;
+        yarım yazılmış .npz 'File is not a zip file' hatası veriyordu."""
+        import os
+
+        tmp = f"{path}.tmp.{os.getpid()}.npz"
         np.savez_compressed(
-            path, nn_idx=self.nn_idx, weights=self.weights,
+            tmp, nn_idx=self.nn_idx, weights=self.weights,
             local_offsets=self.local_offsets, body_faces=self.body_faces,
         )
+        os.replace(tmp, path)
 
     @classmethod
     def load(cls, path: str) -> "GarmentBinding":

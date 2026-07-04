@@ -194,22 +194,38 @@ def _to_tensor01(img01: np.ndarray) -> torch.Tensor:
     return torch.from_numpy(np.ascontiguousarray(img01.transpose(2, 0, 1))).float() * 2.0 - 1.0
 
 
-def _prealign_garment(gverts: np.ndarray, body_verts: np.ndarray, category_hint: str = "top") -> np.ndarray:
-    """Bağlama öncesi kaba hizalama (yalnız binding referansı — v1'in aksine tek
-    mekanizma DEĞİL): Z-up→Y-up, gövde genişliğine ölçek, gövdeye merkezleme.
-    Üst giyim gövde-üst merkezine, elbise gövde merkezine oturur."""
+def _prealign_garment(gverts: np.ndarray, rest: dict, garment_id: str = "") -> np.ndarray:
+    """Bağlama öncesi kaba hizalama — EKLEM tabanlı (yön/poz bağımsız).
+
+    İlk sürüm gövde x-genişliğine ölçekliyordu; rest gövde T-POZUNDA olduğundan
+    'genişlik' kulaç açıklığıydı (~1.7m) → giysi 3 kat şişip patlıyordu (QA'da
+    yakalandı). Şimdi: ölçek omuz/kalça eklem mesafesinden, yerleşim kategoriye
+    göre eklemler arasında (üst→göğüs, elbise→gövde ortası, alt→bacaklar)."""
     from meshvton2.conditioning.render import zup_to_yup
+
+    j = rest["joints"]
+    pelvis, l_hip, r_hip = j[0], j[1], j[2]
+    l_knee, r_knee = j[4], j[5]
+    l_sh, r_sh = j[16], j[17]
+    mid_sh = (l_sh + r_sh) / 2.0
+    mid_knee = (l_knee + r_knee) / 2.0
+    shoulder_w = np.linalg.norm(l_sh - r_sh)
+    hip_w = np.linalg.norm(l_hip - r_hip)
+
+    if "lower_body" in garment_id:
+        target = (pelvis + mid_knee) / 2.0
+        want_width = 2.4 * hip_w
+    elif "dress" in garment_id.lower():
+        target = pelvis + 0.30 * (mid_sh - pelvis)
+        want_width = 1.65 * shoulder_w
+    else:  # üst giyim (varsayılan)
+        target = pelvis + 0.72 * (mid_sh - pelvis)
+        want_width = 1.55 * shoulder_w
 
     g = zup_to_yup(np.asarray(gverts, np.float64))
     g -= g.mean(axis=0)
-    b = np.asarray(body_verts, np.float64)
-    bc = b.mean(axis=0)
-    width = lambda v: v[:, 0].max() - v[:, 0].min()
-    g *= (1.1 * width(b)) / max(width(g), 1e-8)
-    target = bc.copy()
-    if category_hint == "top":
-        height = b[:, 1].max() - b[:, 1].min()
-        target[1] = bc[1] - 0.22 * height  # kamera çerçevesinde +y aşağı → göğüs merkez üstünde
+    horiz = max(g[:, 0].max() - g[:, 0].min(), g[:, 2].max() - g[:, 2].min())
+    g *= want_width / max(horiz, 1e-8)
     return g + target
 
 
@@ -218,9 +234,12 @@ def _get_binding(garment: GarmentAsset, body_model) -> "GarmentBinding":  # noqa
     from meshvton2.conditioning.lbs_drape import GarmentBinding, bind_garment
 
     if garment.lbs_cache and Path(garment.lbs_cache).exists():
-        return GarmentBinding.load(garment.lbs_cache)
+        try:
+            return GarmentBinding.load(garment.lbs_cache)
+        except Exception:  # paralel işçi yarışında yarım yazılmış cache — yeniden kur
+            pass
     rest = body_model.rest()
-    aligned = _prealign_garment(garment.verts, rest["verts"])
+    aligned = _prealign_garment(garment.verts, rest, garment.garment_id)
     binding = bind_garment(aligned, rest["verts"], rest["faces"])
     if garment.lbs_cache:
         Path(garment.lbs_cache).parent.mkdir(parents=True, exist_ok=True)
@@ -262,12 +281,18 @@ def _build_impl_real(
         binding = _get_binding(garment, body_model)
         gverts = apply_binding(binding, body["verts"])
         gverts, clearance_ratio = push_clearance(gverts, body["verts"], body["faces"])
+        # Patlama dedektörü: drape edilmiş giysi gövdeden ne kadar büyük?
+        # (clearance bunu YAKALAYAMAZ — patlayan giysi gövdenin dışındadır;
+        # QA'da 3-4x boyutlu parçalanmış giysi görüldü, bu metrik onun kapısı)
+        diag = lambda v: float(np.linalg.norm(v.max(axis=0) - v.min(axis=0)))
+        extent_ratio = diag(gverts) / max(diag(body["verts"]), 1e-8)
 
         # 3) Ekran-uzayı geometri + görünüm referansı (mesh render'ı)
         geo = render_geometry(body["verts"], body["faces"], gverts, garment.faces, cam, size=size)
         garment_sil = geo["garment_sil"].astype(np.float32)
         appearance01 = render_appearance_ref(garment, size=size).astype(np.float32) / 255.0
-        meta.update(garment_id=garment.garment_id, clearance_ratio=clearance_ratio)
+        meta.update(garment_id=garment.garment_id, clearance_ratio=clearance_ratio,
+                    drape_extent_ratio=extent_ratio)
     else:
         # Gerçek-veri modu: gövde-only geometri; giysi silüeti PARSE'tan,
         # görünüm referansı ürün fotoğrafından (süpervizyon tutarlılığı).

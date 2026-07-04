@@ -142,3 +142,32 @@ def test_garment_none_real_data_mode():
         build_conditioning(person, smplx_params, None, PhotoView(), size=SIZE)
     with pytest.raises(ValueError, match="Sentetik"):
         build_conditioning(None, smplx_params, None, OrbitView(0), size=SIZE, appearance_ref_image=ref)
+
+
+def test_prealign_garment_joint_based():
+    """Ölçek eklemlerden gelir (T-poz kulaç açıklığı DEĞİL — patlama bug'ı) ve
+    üst giyim göğüs hizasına oturur."""
+    from meshvton2.conditioning.builder import _prealign_garment
+
+    j = np.zeros((22, 3))
+    j[0] = [0, 0, 0]                       # pelvis
+    j[1], j[2] = [-0.09, -0.05, 0], [0.09, -0.05, 0]   # kalçalar
+    j[4], j[5] = [-0.10, -0.45, 0], [0.10, -0.45, 0]   # dizler
+    j[16], j[17] = [-0.18, 0.50, 0], [0.18, 0.50, 0]   # omuzlar
+    rest = {"joints": j}
+
+    rng = np.random.RandomState(0)
+    g = rng.uniform(-1, 1, (200, 3))  # kaba küp giysi, Z-up varsayımıyla
+    out = _prealign_garment(g, rest, "upper_body__X_Tshirt")
+
+    horiz = max(out[:, 0].max() - out[:, 0].min(), out[:, 2].max() - out[:, 2].min())
+    shoulder_w = 0.36
+    assert horiz == pytest.approx(1.55 * shoulder_w, rel=0.05)  # kulaç (T-poz) değil omuz ölçeği
+    target_y = 0.72 * 0.50  # pelvis + 0.72*(mid_sh - pelvis)
+    assert out.mean(axis=0)[1] == pytest.approx(target_y, abs=0.02)
+
+    # alt giyim bacaklara iner, elbise gövde ortasına
+    low = _prealign_garment(g, rest, "lower_body__X_Trousers")
+    assert low.mean(axis=0)[1] < 0  # pelvis altı
+    dress = _prealign_garment(g, rest, "dresses__X_Dress")
+    assert 0 < dress.mean(axis=0)[1] < target_y
