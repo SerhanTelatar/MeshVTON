@@ -184,17 +184,29 @@ def main() -> int:
         if existing < args.num:
             restore_from_drive("synth_data.zip", synth_dir.parent)
             existing = count()
-        # PARÇALI üretim: her ~200 denemede bir Drive'a arşiv — Colab kopması
-        # en fazla bir parçalık işi götürür (T4'te tam koşu saatler sürüyor).
-        chunk = 200
+        # PARÇALI + PARALEL üretim: her parça sonrası Drive arşivi (kopma en fazla
+        # bir parça götürür); çok çekirdekli makinede (A100 VM ~12 vCPU) işçiler
+        # paralel — üretim CPU-bound, GPU değil.
+        import multiprocessing
+
+        workers = 4 if multiprocessing.cpu_count() >= 8 else 1
+        chunk = 200 * workers
+        print(f"paralel işçi: {workers} (cpu={multiprocessing.cpu_count()})")
         while existing < args.num:
             take = min(chunk, args.num - existing)
-            run(["python", "v2/scripts/generate_synthetic.py", "--garments", str(args.garments),
-                 "--poses", str(args.poses), "--num", str(take), "--seed", str(existing)],
-                gate=True)
+            per = max(1, take // workers)
+            cmds = [
+                [sys.executable, "v2/scripts/generate_synthetic.py", "--garments", str(args.garments),
+                 "--poses", str(args.poses), "--num", str(per), "--seed", str(existing + k)]
+                for k in range(workers)
+            ]
+            procs = [subprocess.Popen(c) for c in cmds]
+            rcs = [p.wait() for p in procs]
             new = count()
             archive_to_drive(synth_dir, "synth_data.zip")
-            if new == existing:  # hiç örnek yazılamadı (hepsi red/hata) — sonsuz döngü koruması
+            if any(rcs) and new == existing:
+                raise SystemExit(f"HATA: üretim işçileri başarısız (rc={rcs})")
+            if new == existing:  # hiç örnek yazılamadı — sonsuz döngü koruması
                 raise SystemExit("HATA: parça hiç örnek üretemedi — drape reddi/hata oranını inceleyin")
             print(f"ilerleme: {new}/{args.num} yazılmış örnek")
             existing = new
@@ -226,8 +238,13 @@ def main() -> int:
     # ---- 7. train ----
     if active("train") and can_train:
         banner("7/8 Aşama-1 eğitim (resume'lu)")
-        run(["python", "v2/scripts/train_stage1.py", "--max-steps", str(args.train_steps)], gate=True)
-        sync_drive(REPO / "v2/checkpoints/stage1")
+        # checkpoint'ler DOĞRUDAN Drive'a: 20k adım tek oturuma sığmayabilir;
+        # kopma anında son ckpt kaybolmasın (latest.pt oradan resume eder)
+        out_dir = str(DRIVE_OUT / "stage1") if DRIVE_OUT.parent.parent.exists() else None
+        cmd = ["python", "v2/scripts/train_stage1.py", "--max-steps", str(args.train_steps)]
+        if out_dir:
+            cmd += ["--out-dir", out_dir]
+        run(cmd, gate=True)
 
     # ---- 8. eval ----
     if active("eval") and can_train:

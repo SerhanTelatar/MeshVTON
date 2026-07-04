@@ -49,6 +49,7 @@ def main() -> int:
     ap.add_argument("--config", type=Path, default=REPO / "v2/configs/stage1_singleview.yaml")
     ap.add_argument("--max-steps", type=int, default=None)
     ap.add_argument("--batch-size", type=int, default=None)
+    ap.add_argument("--out-dir", type=Path, default=None, help="checkpoint dizini (örn. Drive yolu)")
     ap.add_argument("--smoke", action="store_true", help="10 adım, ckpt yok — kurulum doğrulama")
     args = ap.parse_args()
 
@@ -81,7 +82,7 @@ def main() -> int:
         lr=t["lr"], weight_decay=t["weight_decay"], warmup_steps=0 if args.smoke else t["warmup_steps"],
         grad_accum=1 if args.smoke else t["grad_accum"], max_grad_norm=t["max_grad_norm"],
         ckpt_every=10 ** 9 if args.smoke else t["ckpt_every"], log_every=1 if args.smoke else t["log_every"],
-        out_dir=str(REPO / t["out_dir"]),
+        out_dir=str(args.out_dir or REPO / t["out_dir"]),
     )
     loop = TrainLoop(
         module.trainable_parameters(), module.step, train_cfg,
