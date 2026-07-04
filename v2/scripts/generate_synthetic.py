@@ -34,18 +34,22 @@ def discover_assets(garments_root: Path, cache_dir: Path, limit: int | None):
     dirs = [d for d in dirs if "upper_body" in d.relative_to(garments_root).parts] + [
         d for d in dirs if "upper_body" not in d.relative_to(garments_root).parts
     ]
-    assets = []
+    assets, skipped = [], []
     for d in dirs:
         try:
             gid = str(d.relative_to(garments_root)).replace("/", "__")
             a = load_garment_asset(sorted(d.glob("*.obj"))[0], garment_id=gid)
             assets.append(replace(a, lbs_cache=str(cache_dir / f"{gid}.lbs.npz")))
-        except (ValueError, IndexError) as e:  # texturesiz/bozuk giysi: logla, atla
-            print(f"ATLA {d.name}: {e}", file=sys.stderr)
+        except (ValueError, IndexError):  # texturesiz/bozuk giysi: say, spam'leme
+            skipped.append(d.name)
         if limit and len(assets) >= limit:
             break
+    if skipped:
+        print(f"ATLANDI: {len(skipped)} texturesiz/bozuk giysi (ilk 3: {skipped[:3]}) — "
+              "v1 gri-render dersi gereği bilinçli", file=sys.stderr)
     if not assets:
         raise SystemExit(f"HATA: {garments_root} altında kullanılabilir (texture'lı) giysi yok")
+    print(f"KULLANILABİLİR GİYSİ: {len(assets)}")
     return assets
 
 
