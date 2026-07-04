@@ -141,3 +141,54 @@ def test_img_ids_and_reference_concat():
     assert tokens.shape == (2, 60, 64) and ids.shape == (60, 3)
     assert mask[:30].all() and not mask[30:].any()
     assert torch.equal(tokens[:, :30], tgt) and torch.equal(tokens[:, 30:], ref)
+
+
+# ------------------------ Fill dizi birleştirme ------------------------ #
+
+
+def test_mask_image_for_fill_produces_black():
+    """[-1,1] uzayında maske içi SİYAH (-1) olmalı, gri (0) değil (Fill sözleşmesi)."""
+    from meshvton2.model.flux_tryon import mask_image_for_fill
+
+    img = torch.full((1, 3, 8, 8), 0.5)  # açık gri görüntü
+    mask = torch.zeros(1, 1, 8, 8)
+    mask[..., 2:6, 2:6] = 1.0
+    out = mask_image_for_fill(img, mask)
+    assert torch.allclose(out[..., 3, 3], torch.tensor(-1.0))  # maske içi siyah
+    assert torch.allclose(out[..., 0, 0], torch.tensor(0.5))   # maske dışı aynen
+
+
+def test_pack_pixel_mask_shape_and_content():
+    from meshvton2.model.reference_tokens import pack_pixel_mask
+
+    mask = torch.zeros(2, 1, 32, 16)  # latent 4x2
+    mask[:, :, :8, :] = 1.0           # üst çeyrek dolu
+    p = pack_pixel_mask(mask, 4, 2)
+    assert p.shape == (2, (4 // 2) * (2 // 2), 256)
+    assert p.min() == 0.0 and p.max() == 1.0
+    with pytest.raises(ValueError):
+        pack_pixel_mask(mask, 8, 4)  # boyut uyumsuz
+
+
+def test_assemble_train_sequence_layout():
+    from meshvton2.model.flux_tryon import assemble_train_sequence
+
+    b, c, h, w = 2, 16, 8, 6
+    xt = torch.randn(b, c, h, w)
+    masked = torch.randn(b, c, h, w)
+    pmask = torch.ones(b, 1, 8 * h, 8 * w)
+    ctrls = [torch.randn(b, c, h, w), torch.randn(b, c, h, w)]
+    ref = torch.randn(b, c, h, w)
+
+    tokens, ids, lt = assemble_train_sequence(xt, masked, pmask, ctrls, ref)
+    l_each = (h // 2) * (w // 2)
+    assert lt == l_each
+    assert tokens.shape == (b, 2 * l_each, 384 + 128)  # hedef + referans
+    assert ids.shape == (2 * l_each, 3)
+    assert (ids[:l_each, 0] == 0).all() and (ids[l_each:, 0] == 1).all()
+    # referans token'larında mask(256) ve kontrol(128) kanalları SIFIR
+    ref_part = tokens[:, l_each:]
+    assert (ref_part[..., 128:384] == 0).all()  # mask kanalları
+    assert (ref_part[..., 384:] == 0).all()     # kontrol kanalları
+    # referansın ilk iki 64'lük yuvası aynı (ref | ref)
+    assert torch.equal(ref_part[..., :64], ref_part[..., 64:128])

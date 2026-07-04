@@ -58,3 +58,18 @@ def concat_reference(
     mask = torch.zeros(tokens.shape[1], dtype=torch.bool, device=tokens.device)
     mask[: target_tokens.shape[1]] = True
     return tokens, ids, mask
+
+
+def pack_pixel_mask(mask: torch.Tensor, latent_height: int, latent_width: int) -> torch.Tensor:
+    """FLUX Fill'in maske kanalları: piksel maskesi (B,1,H,W) -> (B, L, 256).
+
+    Fill, maskeyi latent'e indirmez; her latent pikselin 8x8 piksel bloğunu 64
+    kanala açar, sonra 2x2 latent-pack ile 256 kanala paketler (FluxFillPipeline.
+    prepare_mask_latents ile aynı). H = 8*latent_height, W = 8*latent_width olmalı.
+    """
+    b, c, h, w = mask.shape
+    if c != 1 or h != 8 * latent_height or w != 8 * latent_width:
+        raise ValueError(f"mask (B,1,{8*latent_height},{8*latent_width}) olmalı, gelen {tuple(mask.shape)}")
+    m = mask.view(b, latent_height, 8, latent_width, 8)
+    m = m.permute(0, 2, 4, 1, 3).reshape(b, 64, latent_height, latent_width)
+    return pack_latents(m)  # (B, L, 256)

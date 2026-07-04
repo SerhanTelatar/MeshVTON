@@ -1,0 +1,26 @@
+# Aşama 1 — tek görüş eğitimi (LoRA + zero-init kontrol embedder'ı)
+# base.yaml üzerine biner; train_stage1.py okur.
+
+data:
+  real_root: v2/data/vitonhd_items      # preprocess_vitonhd.py çıktısı (yoksa sentetik-only, UYARI)
+  synth_root: v2/data/synth
+  real_ratio: 0.7                       # gerçek:sentetik ≈ 70:30 (domain-gap sigortası)
+  batch_size: 2
+  num_workers: 2
+
+model:
+  lora_rank: 64
+  lora_alpha: 64
+  ref_dropout: 0.1        # görünüm referansını %10 gri yap → geometri kanalı yük taşımayı öğrenir
+  train_guidance: 1.0
+
+train:
+  max_steps: 20000
+  lr: 1.0e-4
+  weight_decay: 0.01
+  warmup_steps: 500
+  grad_accum: 16          # efektif batch 32
+  max_grad_norm: 1.0
+  ckpt_every: 500         # Colab kopması sigortası
+  log_every: 50
+  out_dir: v2/checkpoints/stage1
