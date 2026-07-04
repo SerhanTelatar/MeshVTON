@@ -78,7 +78,9 @@ def main() -> int:
     print(f"\nyazıldı={stats['written']} red={stats['rejected']} hata={len(stats['failed'])}")
     for f in stats["failed"][:5]:
         print(f"  {f}", file=sys.stderr)
-    return 0 if stats["written"] else 1
+    # RED (kalite reddi) bir HATA değildir — çıkış kodu yalnız gerçek hatalarda 1
+    # (küçük partilerde tüm denemelerin red'e takılması normal kuyruk davranışı)
+    return 1 if (stats["failed"] and not stats["written"]) else 0
 
 
 if __name__ == "__main__":
