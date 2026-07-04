@@ -103,3 +103,27 @@ def test_pick_garments_nested_categories(tmp_path):
     assert ids[0] == "upper_body__g1"                    # upper_body öncelikli
     g1 = picked[ids.index("upper_body__g1")]
     assert g1.mesh == "upper_body/g1/model.obj" and g1.category == "upper_body"
+
+
+def test_garment_ref_from_person(tmp_path):
+    """Ürün fotoğrafı yoksa referans kişinin üzerindeki giysiden kesilir (beyaz zemin)."""
+    import importlib.util
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        "preprocess_vitonhd", Path(__file__).parents[1] / "scripts" / "preprocess_vitonhd.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    img = np.full((100, 80, 3), 30, np.uint8)
+    parse = np.zeros((50, 40), np.uint8)   # düşük çözünürlüklü parse (gerçekte 512x384)
+    parse[10:30, 10:30] = 4                # upper_clothes bölgesi
+    img[20:60, 20:60] = (200, 40, 40)      # giysi pikselleri kırmızı
+
+    ref = mod.garment_ref_from_person(img, parse)
+    assert ref is not None and ref.ndim == 3
+    assert (ref == 255).all(axis=2).any()          # beyaz zemin var
+    assert (ref[..., 0] > 150).sum() > 100         # giysi pikselleri taşınmış
+
+    assert mod.garment_ref_from_person(img, np.zeros((50, 40), np.uint8)) is None  # giysi yok

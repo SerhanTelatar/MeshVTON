@@ -228,14 +228,15 @@ def main() -> int:
         items_dir = REPO / "v2/data/vitonhd_items"
         if not items_dir.exists():
             restore_from_drive("vitonhd_items.zip", items_dir.parent)
-        if not args.cloth.exists():
-            print(f"UYARI: {args.cloth} yok (VITON-HD cloth/ ürün fotoğrafları) — "
-                  "gerçek veri ATLANIYOR; eğitim sentetik-only olur (domain-gap riski).")
+        cmd = ["python", "v2/scripts/preprocess_vitonhd.py", "--images", str(args.images),
+               "--idm-repo", str(args.idm_repo), "--limit", str(args.vitonhd_limit)]
+        if args.cloth.exists():
+            cmd += ["--cloth", str(args.cloth)]
         else:
-            run(["python", "v2/scripts/preprocess_vitonhd.py", "--images", str(args.images),
-                 "--cloth", str(args.cloth), "--idm-repo", str(args.idm_repo),
-                 "--limit", str(args.vitonhd_limit)], gate=False)
-            archive_to_drive(items_dir, "vitonhd_items.zip")
+            print(f"NOT: {args.cloth} yok — referans, kişinin üzerindeki giysiden "
+                  "parse maskesiyle kesilecek (cloth/ bağımlılığı kalktı).")
+        run(cmd, gate=False)
+        archive_to_drive(items_dir, "vitonhd_items.zip")
 
     # ---- 6. baseline ----
     if active("baseline") and can_train:
