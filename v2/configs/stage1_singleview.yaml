@@ -15,12 +15,15 @@ model:
   train_guidance: 1.0
 
 train:
-  max_steps: 20000
+  # A100-40GB gerçekçiliği: FLUX 12B + checkpointing'de mikro-adım ~4-6 sn.
+  # Efektif batch 8 (bs2 x accum4) + 8k adım ≈ 40-50 saat (resume'la 2-3 oturum).
+  # LoRA için standart pratik; 102GB sınıfı GPU bulunursa accum/step artırılabilir.
+  max_steps: 8000
   lr: 1.0e-4
   weight_decay: 0.01
-  warmup_steps: 500
-  grad_accum: 16          # efektif batch 32
+  warmup_steps: 250
+  grad_accum: 4           # efektif batch 8
   max_grad_norm: 1.0
-  ckpt_every: 500         # Colab kopması sigortası
+  ckpt_every: 500         # Colab kopması sigortası (Drive'a yazılır)
   log_every: 50
   out_dir: v2/checkpoints/stage1
