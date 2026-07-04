@@ -79,12 +79,14 @@ class FluxTryOn:
         fill_repo: str = "black-forest-labs/FLUX.1-Fill-dev",
         kontext_repo: str = "black-forest-labs/FLUX.1-Kontext-dev",
         device: str = "cuda",
-        dtype: torch.dtype = torch.bfloat16,
+        dtype: torch.dtype | None = None,
         steps: int = 28,
     ):
         if variant not in VARIANTS:
             raise ValueError(f"variant {VARIANTS} içinden olmalı, gelen: {variant}")
         self.variant = variant
+        if dtype is None:  # T4 gibi Turing GPU'lar bf16'yı desteklemez → fp16
+            dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
         self.device, self.dtype, self.steps = device, dtype, steps
         self.repo = fill_repo if variant == "fill_spatial" else kontext_repo
         self._pipe = None
