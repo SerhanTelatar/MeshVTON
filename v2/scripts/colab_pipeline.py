@@ -177,6 +177,8 @@ def main() -> int:
         if not n_existing:
             run(["python", "v2/scripts/generate_synthetic.py", "--garments", str(args.garments),
                  "--poses", str(args.poses), "--num", "5", "--limit-garments", "3"], gate=True)
+        if not any(synth_dir.glob("s*_*/")):
+            raise SystemExit("KAPI: duman testinde hiç örnek yazılamadı — drape hattını inceleyin")
         qa = REPO / "v2/eval_results/synth_qa"
         qa.mkdir(parents=True, exist_ok=True)
         first = sorted(synth_dir.glob("s*_*/"))
@@ -201,22 +203,27 @@ def main() -> int:
         workers = 4 if multiprocessing.cpu_count() >= 8 else 1
         chunk = 200 * workers
         print(f"paralel işçi: {workers} (cpu={multiprocessing.cpu_count()})")
+        salt = 0  # tekrar denemelerde seed'ler TAZE olsun (aynı kimlik → aynı RED döngüsü olmasın)
         while existing < args.num:
-            take = min(chunk, args.num - existing)
-            per = max(1, take // workers)
+            remaining = args.num - existing
+            w = min(workers, remaining)
+            per = max(1, min(chunk, remaining) // w)
             cmds = [
                 [sys.executable, "v2/scripts/generate_synthetic.py", "--garments", str(args.garments),
-                 "--poses", str(args.poses), "--num", str(per), "--seed", str(existing + k)]
-                for k in range(workers)
+                 "--poses", str(args.poses), "--num", str(per), "--seed", str(existing + salt + k)]
+                for k in range(w)
             ]
             procs = [subprocess.Popen(c) for c in cmds]
             rcs = [p.wait() for p in procs]
+            salt += w
             new = count()
             archive_to_drive(synth_dir, "synth_data.zip")
-            if any(rcs) and new == existing:
-                raise SystemExit(f"HATA: üretim işçileri başarısız (rc={rcs})")
-            if new == existing:  # hiç örnek yazılamadı — sonsuz döngü koruması
-                raise SystemExit("HATA: parça hiç örnek üretemedi — drape reddi/hata oranını inceleyin")
+            if new == existing:  # bu turda hiç YENİ örnek yok
+                if remaining <= 2 * workers:
+                    # kuyruk: kalan birkaç örnek red şansına takılıyor — hedefe yeterince yakınız
+                    print(f"NOT: son {remaining} örnek red'lere takıldı; {new} örnekle devam (hedefe ~%100 yakın)")
+                    break
+                raise SystemExit(f"HATA: parça hiç örnek üretemedi (rc={rcs}) — drape red/hata oranını inceleyin")
             print(f"ilerleme: {new}/{args.num} yazılmış örnek")
             existing = new
         print(f"sentetik veri hazır: {existing} örnek")
