@@ -1,7 +1,11 @@
 # MeshVTON v2
 
 FLUX.1 Fill tabanlı, ekran-uzayı geometri koşullamalı, sentetik multi-view süpervizyonlu
-virtual try-on. v1'in (IDM-VTON/SDXL) yerini alır; tasarım gerekçeleri ve fazlar için
+virtual try-on.
+
+![MeshVTON v2 Mimari](docs/architecture_v2.png)
+
+> Diyagram koddan üretilir: `python v2/docs/draw_architecture.py` v1'in (IDM-VTON/SDXL) yerini alır; tasarım gerekçeleri ve fazlar için
 plan dosyasına bakın. **v2 hiçbir zaman v1 `src/`'sinden import etmez** (bağımlılık
 sürümleri uyumsuz — ayrı ortam, ayrı runtime).
 
