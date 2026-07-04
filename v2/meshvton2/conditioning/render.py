@@ -218,13 +218,16 @@ def _add_colored(pyrender, scene, verts, faces, colors01):
 def render_geometry(
     body_verts: np.ndarray,
     body_faces: np.ndarray,
-    garment_verts: np.ndarray,
-    garment_faces: np.ndarray,
+    garment_verts: np.ndarray | None,
+    garment_faces: np.ndarray | None,
     camera: CameraSpec,
     *,
     size: tuple[int, int] = (1024, 768),
 ) -> dict:
-    """Kontrol kanalları için ekran-uzayı pass'leri (hepsi CameraSpec kamerasıyla):
+    """Kontrol kanalları için ekran-uzayı pass'leri (hepsi CameraSpec kamerasıyla).
+
+    garment_verts=None → gövde-only mod (gerçek-veri eğitimi: mesh yok; silüet
+    çağıran tarafça parse'tan sağlanır) — garment_sil sıfır döner.
 
     Returns dict:
         normal   (H,W,3) float32 [0,1] — kamera-uzayı sahne normalleri (gövde+giysi)
@@ -252,17 +255,21 @@ def render_geometry(
     scene = _flat_scene(pyrender)
     _add_colored(pyrender, scene, body_verts, body_faces,
                  _camera_space_normals(body_verts, body_faces, camera))
-    _add_colored(pyrender, scene, garment_verts, garment_faces,
-                 _camera_space_normals(garment_verts, garment_faces, camera))
+    if garment_verts is not None:
+        _add_colored(pyrender, scene, garment_verts, garment_faces,
+                     _camera_space_normals(garment_verts, garment_faces, camera))
     normal_rgb, depth_raw = _render(scene)
     scene_mask = depth_raw > 0
 
     # Pass 2: giysi kimlik rengi (derinlik testi gövde önünü/arkasını doğru ayırır)
-    scene2 = _flat_scene(pyrender)
-    _add_colored(pyrender, scene2, body_verts, body_faces, np.zeros((len(body_verts), 3)))
-    _add_colored(pyrender, scene2, garment_verts, garment_faces, np.ones((len(garment_verts), 3)))
-    idmap, _ = _render(scene2)
-    garment_sil = idmap[..., 0] > 127
+    if garment_verts is not None:
+        scene2 = _flat_scene(pyrender)
+        _add_colored(pyrender, scene2, body_verts, body_faces, np.zeros((len(body_verts), 3)))
+        _add_colored(pyrender, scene2, garment_verts, garment_faces, np.ones((len(garment_verts), 3)))
+        idmap, _ = _render(scene2)
+        garment_sil = idmap[..., 0] > 127
+    else:
+        garment_sil = np.zeros((h, w), dtype=bool)
 
     depth = np.zeros((h, w), np.float32)
     if scene_mask.any():

@@ -130,12 +130,13 @@ class ConditioningBundle:
 def build_conditioning(
     person_image: np.ndarray | None,
     smplx_params: dict[str, Any],
-    garment: GarmentAsset,
+    garment: GarmentAsset | None,
     view: ViewSpec,
     *,
     size: tuple[int, int] = CANONICAL_SIZE,
     device: str = "cpu",
     person_prep: Any | None = None,  # PersonPrep — foto modunda ZORUNLU (agnostic+mask kaynağı)
+    appearance_ref_image: np.ndarray | None = None,  # garment=None modunda ZORUNLU (ürün fotoğrafı)
 ) -> ConditioningBundle:
     """Koşullama demetini üretir.
 
@@ -144,7 +145,11 @@ def build_conditioning(
             (gerçek foto yok, GT render meta["gt_rgb"] olarak döner).
         smplx_params: betas(10), body_pose(63), global_orient(3), transl(3),
             pred_cam(3: s,tx,ty), bbox(4: x,y,w,h) — HMR2 adapter sözleşmesi.
-        garment: yüklenmiş giysi varlığı (LBS cache'i ile).
+        garment: yüklenmiş giysi varlığı (LBS cache'i ile) VEYA None = "gerçek-veri
+            modu": kişinin GİYDİĞİ giysinin mesh'i yok (VITON-HD eğitimi) →
+            geometri gövde-only, giysi silüeti parse'tan, görünüm referansı
+            appearance_ref_image'dan (ürün fotoğrafı). Yalnız foto modunda geçerli;
+            süpervizyon tutarlılığının şartı (GT'deki giysi ≠ rastgele mesh olamaz).
         view: PhotoView() = fotoğrafın kamerası; OrbitView(azim) = döndürülmüş.
         size: (height, width); tek geçerli değer CANONICAL_SIZE, testler küçük
             boyut kullanabilir.
@@ -162,11 +167,20 @@ def build_conditioning(
         raise ValueError(f"smplx_params eksik alanlar: {sorted(missing)} (hmr2_adapter pred_cam+bbox döndürmeli)")
     if not isinstance(view, (PhotoView, OrbitView)):
         raise TypeError(f"view PhotoView|OrbitView olmalı, gelen {type(view)}")
+    if garment is None:
+        if person_image is None:
+            raise ValueError("Sentetik mod (person_image=None) giysi mesh'i olmadan üretilemez")
+        if appearance_ref_image is None:
+            raise ValueError("garment=None modunda appearance_ref_image (ürün fotoğrafı) zorunlu")
 
     if implementation() == "stub":
-        return _build_impl_stub(person_image, smplx_params, garment, view, size=size, device=device)
+        return _build_impl_stub(
+            person_image, smplx_params, garment, view,
+            size=size, device=device, appearance_ref_image=appearance_ref_image,
+        )
     return _build_impl_real(
-        person_image, smplx_params, garment, view, size=size, device=device, person_prep=person_prep
+        person_image, smplx_params, garment, view, size=size, device=device,
+        person_prep=person_prep, appearance_ref_image=appearance_ref_image,
     )
 
 
@@ -214,7 +228,13 @@ def _get_binding(garment: GarmentAsset, body_model) -> "GarmentBinding":  # noqa
     return binding
 
 
-def _build_impl_real(person_image, smplx_params, garment, view, *, size, device, person_prep=None):
+ATR_GARMENT_LABELS = (4, 7)  # upper_clothes, dress — parse'tan giysi silüeti (garment=None modu)
+
+
+def _build_impl_real(
+    person_image, smplx_params, garment, view, *, size, device,
+    person_prep=None, appearance_ref_image=None,
+):
     import cv2
 
     from meshvton2.conditioning import camera as cam_mod
@@ -235,22 +255,31 @@ def _build_impl_real(person_image, smplx_params, garment, view, *, size, device,
     cam0 = cam_mod.photo_camera(smplx_params, size)
     cam = cam0 if isinstance(view, PhotoView) else cam_mod.orbit_camera(cam0, body["pelvis"], view.azim_deg)
 
-    # 2) Drape: rest-binding (cache'li) -> pozlu gövdeye uygula -> clearance
-    binding = _get_binding(garment, body_model)
-    gverts = apply_binding(binding, body["verts"])
-    gverts, clearance_ratio = push_clearance(gverts, body["verts"], body["faces"])
+    meta: dict[str, Any] = {"view": "photo" if isinstance(view, PhotoView) else f"orbit:{view.azim_deg}"}
 
-    # 3) Ekran-uzayı geometri + görünüm referansı
-    geo = render_geometry(body["verts"], body["faces"], gverts, garment.faces, cam, size=size)
-    appearance01 = render_appearance_ref(garment, size=size).astype(np.float32) / 255.0
+    if garment is not None:
+        # 2) Drape: rest-binding (cache'li) -> pozlu gövdeye uygula -> clearance
+        binding = _get_binding(garment, body_model)
+        gverts = apply_binding(binding, body["verts"])
+        gverts, clearance_ratio = push_clearance(gverts, body["verts"], body["faces"])
 
-    depth_sil01 = np.stack([geo["depth"], geo["depth"], geo["garment_sil"].astype(np.float32)], axis=2)
+        # 3) Ekran-uzayı geometri + görünüm referansı (mesh render'ı)
+        geo = render_geometry(body["verts"], body["faces"], gverts, garment.faces, cam, size=size)
+        garment_sil = geo["garment_sil"].astype(np.float32)
+        appearance01 = render_appearance_ref(garment, size=size).astype(np.float32) / 255.0
+        meta.update(garment_id=garment.garment_id, clearance_ratio=clearance_ratio)
+    else:
+        # Gerçek-veri modu: gövde-only geometri; giysi silüeti PARSE'tan,
+        # görünüm referansı ürün fotoğrafından (süpervizyon tutarlılığı).
+        geo = render_geometry(body["verts"], body["faces"], None, None, cam, size=size)
+        parse = np.asarray(person_prep.parse)
+        parse = cv2.resize(parse, (wdt, hgt), interpolation=cv2.INTER_NEAREST)
+        garment_sil = np.isin(parse, ATR_GARMENT_LABELS).astype(np.float32)
+        ref = cv2.resize(appearance_ref_image, (wdt, hgt), interpolation=cv2.INTER_AREA)
+        appearance01 = ref.astype(np.float32) / 255.0
+        meta.update(garment_id="real_worn_garment", clearance_ratio=None)
 
-    meta: dict[str, Any] = {
-        "garment_id": garment.garment_id,
-        "clearance_ratio": clearance_ratio,
-        "view": "photo" if isinstance(view, PhotoView) else f"orbit:{view.azim_deg}",
-    }
+    depth_sil01 = np.stack([geo["depth"], geo["depth"], garment_sil], axis=2)
 
     # 4) Agnostic + maske
     if person_image is None:  # sentetik mod: GT render'dan türet
@@ -283,24 +312,30 @@ def _build_impl_real(person_image, smplx_params, garment, view, *, size, device,
 # --------------------------------------------------------------------------- #
 
 
-def _stable_seed(person_image, smplx_params, garment: GarmentAsset, view: ViewSpec, size) -> int:
+def _stable_seed(person_image, smplx_params, garment: GarmentAsset | None, view: ViewSpec, size, appearance_ref_image=None) -> int:
     """Girdilerin tamamından deterministik tohum — parite testinin temeli."""
     h = hashlib.sha256()
     h.update(b"none" if person_image is None else person_image.tobytes())
     for key in sorted(k for k in smplx_params if k in ("betas", "body_pose", "global_orient", "transl", "pred_cam", "bbox")):
         h.update(key.encode())
         h.update(np.asarray(smplx_params[key], dtype=np.float64).tobytes())
-    h.update(garment.garment_id.encode())
-    h.update(garment.verts.astype(np.float64).tobytes())
+    if garment is not None:
+        h.update(garment.garment_id.encode())
+        h.update(garment.verts.astype(np.float64).tobytes())
+    else:
+        h.update(b"nogarment")
+        h.update(np.ascontiguousarray(appearance_ref_image).tobytes())
     view_tag = "photo" if isinstance(view, PhotoView) else f"orbit:{view.azim_deg}"
     h.update(view_tag.encode())
     h.update(json.dumps(size).encode())
     return int.from_bytes(h.digest()[:8], "little")
 
 
-def _build_impl_stub(person_image, smplx_params, garment, view, *, size, device) -> ConditioningBundle:
+def _build_impl_stub(person_image, smplx_params, garment, view, *, size, device, appearance_ref_image=None) -> ConditioningBundle:
     hgt, wdt = size
-    gen = torch.Generator().manual_seed(_stable_seed(person_image, smplx_params, garment, view, size))
+    gen = torch.Generator().manual_seed(
+        _stable_seed(person_image, smplx_params, garment, view, size, appearance_ref_image)
+    )
 
     def rand_img() -> torch.Tensor:
         return (torch.rand(3, hgt, wdt, generator=gen) * 2 - 1).float()
@@ -313,7 +348,7 @@ def _build_impl_stub(person_image, smplx_params, garment, view, *, size, device)
         T=(0.0, 0.0, 2.7),
         source=view_tag if person_image is not None else f"synth:{view_tag}",
     )
-    meta: dict[str, Any] = {"stub": True, "garment_id": garment.garment_id}
+    meta: dict[str, Any] = {"stub": True, "garment_id": garment.garment_id if garment else "real_worn_garment"}
     if person_image is None:
         meta["gt_rgb"] = rand_img()
     return ConditioningBundle(
