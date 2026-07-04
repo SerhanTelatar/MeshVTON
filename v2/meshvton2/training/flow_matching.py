@@ -72,3 +72,10 @@ def rf_loss(v_pred: torch.Tensor, x0: torch.Tensor, noise: torch.Tensor, token_m
         m = m.unsqueeze(-1)
     denom = (m.expand_as(err)).sum().clamp_min(1.0)
     return (err * m).sum() / denom
+
+
+def make_sigma_schedule(steps: int, seq_len: int) -> torch.Tensor:
+    """(steps+1,) azalan sigma çizelgesi: 1 → 0, çözünürlük shift'li.
+    Örnekleme Euler adımı: x_{i+1} = x_i + (σ_{i+1} − σ_i)·v(x_i, σ_i)."""
+    t = torch.linspace(1.0, 0.0, steps + 1)
+    return apply_shift(t, resolution_shift(seq_len))
