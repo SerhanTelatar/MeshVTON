@@ -123,6 +123,11 @@ def main() -> int:
 
     # ---- 1. check ----
     banner("1/8 ortam kontrolü")
+    try:
+        head = subprocess.check_output(["git", "-C", str(REPO), "log", "--oneline", "-1"], text=True).strip()
+        print(f"repo: {head}")  # düzeltmelerin gelip gelmediği buradan doğrulanır
+    except Exception:
+        pass
     name, vram = gpu_info()
     print(f"GPU: {name} ({vram:.0f} GB)")
     if name == "YOK":
@@ -165,7 +170,11 @@ def main() -> int:
     if active("smoke"):
         banner("3/8 sentetik duman testi + QA sheet")
         # pairs.csv değil ÖRNEK sayısına bak: başarısız koşu header'lı boş csv bırakabilir
-        if not any(synth_dir.glob("s*_*/")):
+        n_existing = sum(1 for _ in synth_dir.glob("s*_*/")) if synth_dir.exists() else 0
+        if n_existing:
+            print(f"NOT: diskte {n_existing} mevcut örnek var — duman üretimi ATLANIYOR. "
+                  "Taze duman istiyorsanız v2/data/synth silinmeli.")
+        if not n_existing:
             run(["python", "v2/scripts/generate_synthetic.py", "--garments", str(args.garments),
                  "--poses", str(args.poses), "--num", "5", "--limit-garments", "3"], gate=True)
         qa = REPO / "v2/eval_results/synth_qa"
