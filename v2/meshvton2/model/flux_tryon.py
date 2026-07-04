@@ -351,3 +351,85 @@ class FluxTrainModule:
         )[0]
         v_target = pack_latents(rf_target(x0.float(), noise))
         return torch.nn.functional.mse_loss(v_pred[:, :lt].float(), v_target)
+
+
+class FluxTryOnSampler:
+    """Eğitilmiş checkpoint'le try-on üretimi — FluxTrainModule.step'in AYNASI.
+
+    Aynı kanal düzeni, aynı referans token'ları, aynı guidance (eğitimdekiyle
+    tutarlı olmalı: LoRA guidance=1.0 altında adapte edildi). Euler örnekleme:
+    x_{i+1} = x_i + (σ_{i+1} − σ_i)·v.
+
+    control_scale: 1.0 = eğitilmiş kontrol; 0.0 = kontrol latent'leri sıfır →
+    control_proj(0)=0, bit-eş stok davranış — '--disable-control' ABLATION
+    KAPISI bununla ölçülür (v1 FAZ C dersinin otomatik testi).
+    """
+
+    def __init__(self, repo: str = "black-forest-labs/FLUX.1-Fill-dev", *,
+                 checkpoint: str | None = None, device: str = "cuda",
+                 prompt: str = "a person wearing the garment, photorealistic fashion photo",
+                 guidance: float = 1.0, control_images: int = 2):
+        self.module = FluxTrainModule(
+            repo, prompt=prompt, device=device, control_images=control_images,
+            train_guidance=guidance, ref_dropout=0.0,
+        ).setup()
+        if checkpoint:
+            import torch as _t
+
+            ck = _t.load(checkpoint, map_location="cpu", weights_only=False)
+            state = ck.get("trainables") or ck  # TrainLoop ckpt'i veya düz sözlük
+            self.module.load_trainable_state(state)
+            print(f"checkpoint yüklendi: {checkpoint} ({len(state)} tensör)")
+        self.module.transformer.eval()
+
+    @torch.no_grad()
+    def sample(self, bundle, *, steps: int = 28, seed: int = 0,
+               control_scale: float = 1.0) -> np.ndarray:
+        """bundle: ConditioningBundle (veya aynı alanlara sahip dict-benzeri).
+        -> (H,W,3) uint8 try-on; maske dışı agnostic'ten kompozit edilir."""
+        from meshvton2.model.reference_tokens import unpack_latents
+        from meshvton2.training.flow_matching import make_sigma_schedule
+
+        m = self.module
+        dev, dt = m.device, m.dtype
+        unsq = lambda t: t.unsqueeze(0).to(dev)
+        agnostic = unsq(bundle.agnostic_rgb)
+        mask = unsq(bundle.inpaint_mask)
+        _, _, hgt, wdt = agnostic.shape
+        lh, lw = hgt // 8, wdt // 8
+
+        masked_lat = m.encode(mask_image_for_fill(agnostic.cpu(), mask.cpu()))
+        ctrl_lats = [m.encode(unsq(bundle.control_normal)),
+                     m.encode(unsq(bundle.control_depth_sil))]
+        if control_scale != 1.0:
+            ctrl_lats = [c * control_scale for c in ctrl_lats]
+        ref_lat = m.encode(unsq(bundle.appearance_ref))
+
+        gen = torch.Generator().manual_seed(seed)
+        x = torch.randn((1, 16, lh, lw), generator=gen).to(dev, torch.float32)
+        sigmas = make_sigma_schedule(steps, (lh // 2) * (lw // 2)).to(dev)
+
+        for i in range(steps):
+            tokens, img_ids, lt = assemble_train_sequence(
+                x.to(dt), masked_lat, mask.to(dev, dt), ctrl_lats, ref_lat
+            )
+            v = m.transformer(
+                hidden_states=tokens.to(m.transformer.dtype),
+                timestep=sigmas[i].expand(1).to(m.transformer.dtype),
+                guidance=torch.full((1,), m.train_guidance, device=dev, dtype=torch.float32),
+                pooled_projections=m.pooled_embeds,
+                encoder_hidden_states=m.prompt_embeds,
+                txt_ids=m.text_ids,
+                img_ids=img_ids,
+                return_dict=False,
+            )[0][:, :lt]
+            v = unpack_latents(v.float(), lh, lw)
+            x = x + (sigmas[i + 1] - sigmas[i]) * v
+
+        lat = x.to(dt) / m.vae_scale + m.vae_shift
+        img = m.vae.decode(lat).sample[0]  # (3,H,W) [-1,1]
+        pred = ((img.float().clamp(-1, 1) + 1) / 2 * 255).round().byte().permute(1, 2, 0).cpu().numpy()
+
+        person = ((bundle.agnostic_rgb.clamp(-1, 1) + 1) / 2 * 255).byte().permute(1, 2, 0).numpy()
+        mask_u8 = (bundle.inpaint_mask[0].numpy() * 255).astype(np.uint8)
+        return composite_outside_mask(pred, person, mask_u8)

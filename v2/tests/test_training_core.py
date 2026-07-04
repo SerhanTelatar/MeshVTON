@@ -192,3 +192,19 @@ def test_assemble_train_sequence_layout():
     assert (ref_part[..., 384:] == 0).all()     # kontrol kanalları
     # referansın ilk iki 64'lük yuvası aynı (ref | ref)
     assert torch.equal(ref_part[..., :64], ref_part[..., 64:128])
+
+
+def test_sigma_schedule():
+    from meshvton2.training.flow_matching import make_sigma_schedule
+
+    s = make_sigma_schedule(28, 3072)
+    assert s.shape == (29,)
+    assert s[0] == pytest.approx(1.0) and s[-1] == pytest.approx(0.0)
+    assert (s[:-1] > s[1:]).all()  # kesin azalan
+    # Euler tutarlılığı: sabit v ile x tam x0'a iner (x_t = x0 + σ·v tanımı gereği)
+    x0 = torch.randn(2, 8)
+    v = torch.randn(2, 8)
+    x = x0 + s[0] * v
+    for i in range(28):
+        x = x + (s[i + 1] - s[i]) * v
+    assert torch.allclose(x, x0, atol=1e-5)
