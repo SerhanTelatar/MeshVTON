@@ -135,10 +135,10 @@ def main() -> int:
             "HATA: GPU yok (CPU runtime). Runtime -> Change runtime type -> GPU seçin.\n"
             "Prova (veri+doğrulama) için T4 yeter; eğitim için L4/A100."
         )
-    if vram < 20:
+    if vram < 30:  # L4 (24GB) FLUX eğitimine yetmez (ağırlıklar tek başına ~24GB) → OOM önlemi
         can_train = False
-        print("UYARI: <20GB VRAM — FLUX aşamaları (baseline/train) ATLANACAK; "
-              "veri üretimi + doğrulama yine koşar. Eğitim için L4/A100 runtime seçin.")
+        print("UYARI: <30GB VRAM — FLUX aşamaları (baseline/train) ATLANACAK; "
+              "veri üretimi + doğrulama yine koşar. Eğitim için A100 runtime seçin.")
     # bağımlılık denetimi: eksikler tek tek, kurulum ipucuyla (kapıda sürpriz yerine burada dur)
     deps = {
         "pyrender": "pip install pyrender", "smplx": "pip install smplx",
