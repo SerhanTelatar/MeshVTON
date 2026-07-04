@@ -151,3 +151,203 @@ class FluxTryOn:
             pred = crop_half(arr, "left")
 
         return composite_outside_mask(pred, person, mask)
+
+
+
+# --------------------------------------------------------------------------- #
+# Faz 4: eğitim — FluxTrainModule (FLUX'a dokunan TEK yer burası kalmaya devam)
+# --------------------------------------------------------------------------- #
+
+from meshvton2.model.reference_tokens import (  # noqa: E402
+    concat_reference,
+    make_img_ids,
+    pack_latents,
+    pack_pixel_mask,
+)
+
+FILL_BASE_CH = 384  # 64 (noisy latent) + 64 (masked image latent) + 256 (mask blokları)
+
+
+def mask_image_for_fill(img: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    """Fill'in beklediği maskeli görüntü: maske içi SİYAH.
+
+    Dikkat: [-1,1] uzayında img*(1-mask) siyah değil GRİ (0) üretir — iki taslak
+    sürümde de bu hata vardı. Doğrusu [0,1]'e çık, maskele, geri dön.
+    """
+    img01 = (img + 1.0) / 2.0
+    return (img01 * (1.0 - mask)) * 2.0 - 1.0
+
+
+def assemble_train_sequence(
+    xt_lat: torch.Tensor,          # (B,16,h,w) gürültülü hedef latent
+    masked_lat: torch.Tensor,      # (B,16,h,w) maskeli görüntü latent'i
+    pixel_mask: torch.Tensor,      # (B,1,8h,8w) inpaint maskesi {0,1}
+    control_lats: list[torch.Tensor],  # her biri (B,16,h,w) — [normal, depth_sil]
+    ref_lat: torch.Tensor,         # (B,16,h,w) görünüm referansı latent'i
+) -> tuple[torch.Tensor, torch.Tensor, int]:
+    """Fill kanal düzeni + Kontext-tarzı referans concat (saf tensör — lokal testli).
+
+    hedef token = [x_t 64 | masked 64 | mask 256 | kontrol 64×N] = 384+64N
+    ref   token = [ref 64 | ref 64    | 0    256 | 0      64×N]
+      (ref'in "masked image" yuvası kendisi: temiz bağlam; mask=0 → inpaint edilmez)
+
+    Returns: (tokens (B,Lt+Lr,384+64N), img_ids (Lt+Lr,3), Lt)
+    """
+    b, _, h, w = xt_lat.shape
+    xt_p, masked_p, ref_p = pack_latents(xt_lat), pack_latents(masked_lat), pack_latents(ref_lat)
+    mask_p = pack_pixel_mask(pixel_mask, h, w)
+    ctrl_p = [pack_latents(c) for c in control_lats]
+
+    target = torch.cat([xt_p, masked_p, mask_p, *ctrl_p], dim=-1)
+    reference = torch.cat(
+        [ref_p, ref_p, torch.zeros_like(mask_p), *[torch.zeros_like(c) for c in ctrl_p]], dim=-1
+    )
+    tids = make_img_ids(h, w, frame_idx=0, device=xt_lat.device)
+    rids = make_img_ids(h, w, frame_idx=1, device=xt_lat.device)
+    tokens, ids, _ = concat_reference(target, tids, reference, rids)
+    return tokens, ids, target.shape[1]
+
+
+class FluxTrainModule:
+    """FLUX.1 Fill + LoRA + zero-init kontrol embedder'ı eğitim sarmalayıcısı.
+
+    Dondurulmuş Fill transformer + VAE; eğitilen = LoRA + control_proj.
+    Sabit prompt'un T5/CLIP embed'leri setup'ta CPU'da BİR KEZ hesaplanır
+    (GPU'da ~9GB T5 tepe kullanımı olmaz), text encoder'lar atılır.
+    step(batch) -> loss; TrainLoop'a step_fn olarak verilir. Eğitilebilir
+    durum = transformer'daki requires_grad parametreler (tek checkpoint).
+    """
+
+    def __init__(
+        self,
+        repo: str = "black-forest-labs/FLUX.1-Fill-dev",
+        *,
+        prompt: str = "a person wearing the garment, photorealistic fashion photo",
+        device: str = "cuda",
+        lora_rank: int = 64,
+        lora_alpha: int = 64,
+        control_images: int = 2,       # normal + depth_sil
+        train_guidance: float = 1.0,   # Fill guidance-distilled; eğitimde sabit
+        ref_dropout: float = 0.1,      # referansı %10 gri yap → geometri yük taşımayı öğrenir
+        t_mean: float = 0.0,
+        t_std: float = 1.0,
+        seed: int = 0,
+    ):
+        self.repo, self.prompt, self.device = repo, prompt, device
+        self.lora_rank, self.lora_alpha = lora_rank, lora_alpha
+        self.control_in = 64 * control_images
+        self.train_guidance, self.ref_dropout = train_guidance, ref_dropout
+        self.t_mean, self.t_std = t_mean, t_std
+        self.gen = torch.Generator().manual_seed(seed)
+        self.transformer = None
+
+    # ------------------------------ kurulum ------------------------------ #
+
+    def setup(self):
+        import gc
+
+        from diffusers import FluxFillPipeline
+
+        from meshvton2.model.control_embedder import attach_control_embedder
+        from meshvton2.model.lora import attach_lora, count_trainable
+
+        dtype = (torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+                 else torch.float16)
+        self.dtype = dtype
+        pipe = FluxFillPipeline.from_pretrained(self.repo, torch_dtype=dtype)
+
+        # Sabit prompt embed'leri CPU'da bir kez → text encoder'ları at
+        with torch.no_grad():
+            pe, ppe, tids = pipe.encode_prompt(
+                prompt=self.prompt, prompt_2=None, device="cpu", num_images_per_prompt=1
+            )
+        self.prompt_embeds = pe.to(self.device, dtype)   # (1, 512, 4096)
+        self.pooled_embeds = ppe.to(self.device, dtype)  # (1, 768)
+        self.text_ids = tids.to(self.device)             # (512, 3)
+
+        self.vae = pipe.vae.to(self.device).requires_grad_(False).eval()
+        self.vae_scale = self.vae.config.scaling_factor
+        self.vae_shift = self.vae.config.shift_factor
+
+        self.transformer = pipe.transformer.to(self.device)
+        self.transformer.requires_grad_(False)
+        attach_lora(self.transformer, rank=self.lora_rank, alpha=self.lora_alpha)
+        self.control_embedder = attach_control_embedder(self.transformer, self.control_in)
+        self.transformer.enable_gradient_checkpointing()
+        self.transformer.train()
+
+        del pipe.text_encoder, pipe.text_encoder_2, pipe.tokenizer, pipe.tokenizer_2, pipe
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        print(f"FluxTrainModule hazır — eğitilebilir param: {count_trainable(self.transformer):,}")
+        return self
+
+    # ------------------------------ yardımcılar ------------------------------ #
+
+    @torch.no_grad()
+    def encode(self, img: torch.Tensor) -> torch.Tensor:
+        """(B,3,H,W) [-1,1] -> FLUX latent (B,16,H/8,W/8), ölçekli."""
+        img = img.to(self.device, self.vae.dtype)
+        z = self.vae.encode(img).latent_dist.sample()
+        return (z - self.vae_shift) * self.vae_scale
+
+    def trainable_parameters(self):
+        return (p for p in self.transformer.parameters() if p.requires_grad)
+
+    def trainable_state(self) -> dict:
+        from meshvton2.model.lora import trainable_state
+
+        return trainable_state(self.transformer)
+
+    def load_trainable_state(self, state: dict) -> None:
+        from meshvton2.model.lora import load_trainable_state
+
+        load_trainable_state(self.transformer, state)
+
+    # -------------------------------- adım -------------------------------- #
+
+    def step(self, batch: dict) -> torch.Tensor:
+        from meshvton2.training.flow_matching import (
+            apply_shift,
+            resolution_shift,
+            rf_interpolate,
+            rf_target,
+            sample_logit_normal_t,
+        )
+
+        gt = batch["gt_rgb"]
+        mask_cpu = batch["inpaint_mask"]
+        x0 = self.encode(gt)
+        masked_lat = self.encode(mask_image_for_fill(batch["agnostic_rgb"], mask_cpu))
+        ctrl_lats = [self.encode(batch["control_normal"]), self.encode(batch["control_depth_sil"])]
+
+        ref = batch["appearance_ref"]
+        if self.ref_dropout > 0:
+            drop = torch.rand(ref.shape[0], generator=self.gen) < self.ref_dropout
+            if drop.any():
+                ref = ref.clone()
+                ref[drop] = 0.0  # [-1,1] ortası = nötr gri görüntü
+        ref_lat = self.encode(ref)
+
+        b = x0.shape[0]
+        noise = torch.randn(x0.shape, generator=self.gen).to(self.device, torch.float32)
+        t = sample_logit_normal_t(b, mean=self.t_mean, std=self.t_std, generator=self.gen).to(self.device)
+        t = apply_shift(t, resolution_shift((x0.shape[2] // 2) * (x0.shape[3] // 2)))
+        x_t = rf_interpolate(x0.float(), noise, t).to(x0.dtype)  # fp32 karışım, sonra geri
+
+        mask = mask_cpu.to(self.device, x0.dtype)
+        tokens, img_ids, lt = assemble_train_sequence(x_t, masked_lat, mask, ctrl_lats, ref_lat)
+
+        v_pred = self.transformer(
+            hidden_states=tokens.to(self.transformer.dtype),
+            timestep=t.to(self.transformer.dtype),
+            guidance=torch.full((b,), self.train_guidance, device=self.device, dtype=torch.float32),
+            pooled_projections=self.pooled_embeds.expand(b, -1),
+            encoder_hidden_states=self.prompt_embeds.expand(b, -1, -1),
+            txt_ids=self.text_ids,
+            img_ids=img_ids,
+            return_dict=False,
+        )[0]
+        v_target = pack_latents(rf_target(x0.float(), noise))
+        return torch.nn.functional.mse_loss(v_pred[:, :lt].float(), v_target)
