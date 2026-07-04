@@ -125,3 +125,20 @@ def test_camera_spec_roundtrip():
         source="orbit:90",
     )
     assert builder.CameraSpec.from_dict(cam.to_dict()) == cam
+
+
+def test_garment_none_real_data_mode():
+    """garment=None (gerçek-veri modu): foto modunda ürün fotoğrafıyla çalışır,
+    sentetik modda ve referanssız reddedilir."""
+    person, smplx_params, _ = _inputs()
+    ref = np.random.RandomState(2).randint(0, 255, (32, 24, 3), dtype=np.uint8)
+
+    a = build_conditioning(person, smplx_params, None, PhotoView(), size=SIZE, appearance_ref_image=ref)
+    b = build_conditioning(person, smplx_params, None, PhotoView(), size=SIZE, appearance_ref_image=ref)
+    _assert_bundles_equal(a, b)  # parite bu modda da geçerli
+    assert a.meta["garment_id"] == "real_worn_garment"
+
+    with pytest.raises(ValueError, match="appearance_ref_image"):
+        build_conditioning(person, smplx_params, None, PhotoView(), size=SIZE)
+    with pytest.raises(ValueError, match="Sentetik"):
+        build_conditioning(None, smplx_params, None, OrbitView(0), size=SIZE, appearance_ref_image=ref)
