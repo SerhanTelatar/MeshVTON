@@ -94,12 +94,31 @@ def main() -> int:
     banner("1/8 ortam kontrolü")
     name, vram = gpu_info()
     print(f"GPU: {name} ({vram:.0f} GB)")
+    if name == "YOK":
+        raise SystemExit(
+            "HATA: GPU yok (CPU runtime). Runtime -> Change runtime type -> GPU seçin.\n"
+            "Prova (veri+doğrulama) için T4 yeter; eğitim için L4/A100."
+        )
     if vram < 20:
         can_train = False
         print("UYARI: <20GB VRAM — FLUX aşamaları (baseline/train) ATLANACAK; "
               "veri üretimi + doğrulama yine koşar. Eğitim için L4/A100 runtime seçin.")
-    sil = shutil.which("python") or sys.executable
-    print(f"python: {sil}")
+    # bağımlılık denetimi: eksikler tek tek, kurulum ipucuyla (kapıda sürpriz yerine burada dur)
+    deps = {
+        "pyrender": "pip install pyrender", "smplx": "pip install smplx",
+        "trimesh": "pip install trimesh", "onnxruntime": "pip install onnxruntime",
+        "hmr2": 'pip install "git+https://github.com/shubham-goel/4D-Humans.git"',
+        "diffusers": 'pip install "diffusers>=0.34"', "peft": 'pip install "peft>=0.14"',
+    }
+    missing = []
+    import importlib.util as _ilu
+
+    for mod, hint in deps.items():
+        if _ilu.find_spec(mod) is None:
+            missing.append(f"  {mod}  ->  {hint}")
+    if missing:
+        raise SystemExit("HATA: eksik bağımlılıklar (kurulum hücresi koşmadı mı?):\n" + "\n".join(missing))
+    print("bağımlılıklar tamam")
 
     # ---- 2. camera gate ----
     if active("camera"):
