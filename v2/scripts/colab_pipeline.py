@@ -178,17 +178,27 @@ def main() -> int:
 
     # ---- 4. full synth ----
     if active("synth"):
-        banner(f"4/8 tam sentetik üretim ({args.num} örnek × 4 görüş)")
-        existing = sum(1 for _ in synth_dir.glob("s*_*/")) if synth_dir.exists() else 0
-        if existing < args.num and restore_from_drive("synth_data.zip", synth_dir.parent):
-            existing = sum(1 for _ in synth_dir.glob("s*_*/"))
-        if existing >= args.num:
-            print(f"zaten {existing} örnek var, atlanıyor")
-        else:
+        banner(f"4/8 tam sentetik üretim (hedef {args.num} YAZILMIŞ örnek × 4 görüş)")
+        count = lambda: sum(1 for _ in synth_dir.glob("s*_*/")) if synth_dir.exists() else 0
+        existing = count()
+        if existing < args.num:
+            restore_from_drive("synth_data.zip", synth_dir.parent)
+            existing = count()
+        # PARÇALI üretim: her ~200 denemede bir Drive'a arşiv — Colab kopması
+        # en fazla bir parçalık işi götürür (T4'te tam koşu saatler sürüyor).
+        chunk = 200
+        while existing < args.num:
+            take = min(chunk, args.num - existing)
             run(["python", "v2/scripts/generate_synthetic.py", "--garments", str(args.garments),
-                 "--poses", str(args.poses), "--num", str(args.num - existing),
-                 "--seed", str(existing)], gate=True)
-            archive_to_drive(synth_dir, "synth_data.zip")  # oturum ölürse veri Drive'da yaşar
+                 "--poses", str(args.poses), "--num", str(take), "--seed", str(existing)],
+                gate=True)
+            new = count()
+            archive_to_drive(synth_dir, "synth_data.zip")
+            if new == existing:  # hiç örnek yazılamadı (hepsi red/hata) — sonsuz döngü koruması
+                raise SystemExit("HATA: parça hiç örnek üretemedi — drape reddi/hata oranını inceleyin")
+            print(f"ilerleme: {new}/{args.num} yazılmış örnek")
+            existing = new
+        print(f"sentetik veri hazır: {existing} örnek")
         sync_drive(synth_dir / "pairs.csv")
 
     # ---- 5. vitonhd ----
