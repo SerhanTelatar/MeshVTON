@@ -5,8 +5,8 @@ data:
   real_root: v2/data/vitonhd_items      # preprocess_vitonhd.py çıktısı (yoksa sentetik-only, UYARI)
   synth_root: v2/data/synth
   real_ratio: 0.7                       # gerçek:sentetik ≈ 70:30 (domain-gap sigortası)
-  batch_size: 2
-  num_workers: 2
+  batch_size: 4                         # A100-80GB'a checkpointing'le rahat sığar
+  num_workers: 8                        # PNG çözme GPU'yu bekletmesin (VM 12 vCPU)
 
 model:
   lora_rank: 64
@@ -15,15 +15,15 @@ model:
   train_guidance: 1.0
 
 train:
-  # A100-40GB gerçekçiliği: FLUX 12B + checkpointing'de mikro-adım ~4-6 sn.
-  # Efektif batch 8 (bs2 x accum4) + 8k adım ≈ 40-50 saat (resume'la 2-3 oturum).
-  # LoRA için standart pratik; 102GB sınıfı GPU bulunursa accum/step artırılabilir.
-  max_steps: 8000
+  # Ölçüldü (A100-80GB): bs2xaccum4 = 21.7s/adım -> 8k adım 48 saat, bütçeye fazla.
+  # bs4xaccum1 (efektif 4 — LoRA için standart) + 4k adım ≈ ~10 saat / 1 gece.
+  # 4k'da ablation kapısı koşulur; skorlar "daha pişmeli" derse resume'la devam.
+  max_steps: 4000
   lr: 1.0e-4
   weight_decay: 0.01
-  warmup_steps: 250
-  grad_accum: 4           # efektif batch 8
+  warmup_steps: 200
+  grad_accum: 1           # efektif batch 4
   max_grad_norm: 1.0
-  ckpt_every: 500         # Colab kopması sigortası (Drive'a yazılır)
-  log_every: 50
+  ckpt_every: 250         # Drive'a; kopma riski penceresi ~40dk
+  log_every: 25
   out_dir: v2/checkpoints/stage1
