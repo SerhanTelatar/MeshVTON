@@ -124,3 +124,37 @@ def test_train_loop_rejects_frozen_params():
     with pytest.raises(ValueError):
         TrainLoop(lin.parameters(), lambda b: torch.tensor(0.0),
                   TrainConfig(max_steps=1), log=lambda *_: None)
+
+
+def test_latents_fast_path(synth_root):
+    """precompute latent'leri varsa dataset VAE'siz sözlük döner; yoksa net hata."""
+    items = discover_synth_items(synth_root)
+    it = items[0]
+    with pytest.raises(FileNotFoundError, match="precompute"):
+        ds_missing = SingleViewDataset(items, size=SIZE, use_latents=True)
+        _ = ds_missing[0]
+
+    fake = {k: torch.randn(16, 8, 6, dtype=torch.bfloat16)
+            for k in ("gt_lat", "masked_lat", "normal_lat", "depth_sil_lat", "ref_lat")}
+    torch.save(fake, it.item_dir / "latents.pt")
+    d = SingleViewDataset([it], size=SIZE, use_latents=True)[0]
+    assert set(fake) <= set(d) and d["inpaint_mask"].shape == (1, *SIZE)
+    assert torch.equal(d["gt_lat"], fake["gt_lat"])
+    (it.item_dir / "latents.pt").unlink()  # fixture'ı diğer testler için temiz bırak
+
+
+def test_checkpoint_rotation(tmp_path):
+    """100 adımda bir ckpt + rotasyon: yalnız son keep_last kalır (Drive kotası)."""
+    model = torch.nn.Linear(2, 1)
+    loader = [{"x": torch.randn(4, 2)}] * 5
+    cfg = TrainConfig(max_steps=50, ckpt_every=10, keep_last=2, log_every=1000,
+                      out_dir=str(tmp_path))
+    loop = TrainLoop(model.parameters(),
+                     lambda b: (model(b["x"]) ** 2).mean(), cfg,
+                     state_provider=lambda: {"w": model.state_dict()},
+                     state_loader=lambda s: model.load_state_dict(s["w"]),
+                     log=lambda *_: None)
+    loop.run(loader)
+    cks = sorted(p.name for p in tmp_path.glob("ckpt_*.pt"))
+    assert cks == ["ckpt_000040.pt", "ckpt_000050.pt"]  # 10..30 silindi
+    assert (tmp_path / "latest.pt").read_text().endswith("ckpt_000050.pt")

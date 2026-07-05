@@ -31,8 +31,21 @@ class TrainItem:
         return all((self.item_dir / f"{f}.png").exists() for f in FILES) and self.appearance_ref.exists()
 
 
-def load_item(item: TrainItem, size: tuple[int, int] | None = None) -> dict[str, torch.Tensor]:
-    """-> ConditioningBundle alan adlarıyla uyumlu tensör sözlüğü, hepsi [-1,1]/({0,1} maske)."""
+def load_item(item: TrainItem, size: tuple[int, int] | None = None, use_latents: bool = False) -> dict[str, torch.Tensor]:
+    """-> ConditioningBundle alan adlarıyla uyumlu tensör sözlüğü, hepsi [-1,1]/({0,1} maske).
+
+    use_latents=True: precompute_latents.py çıktısını okur (gt_lat/masked_lat/
+    normal_lat/depth_sil_lat/ref_lat + inpaint_mask) — eğitim adımında VAE yok.
+    Latent dosyası eksikse HATA (karışık batch collate'i kırar; sessiz fallback yok)."""
+    if use_latents:
+        lat_path = item.item_dir / "latents.pt"
+        if not lat_path.exists():
+            raise FileNotFoundError(
+                f"{lat_path} yok — önce: python v2/scripts/precompute_latents.py"
+            )
+        out = torch.load(lat_path, map_location="cpu", weights_only=True)
+        out["inpaint_mask"] = load_mask(item.item_dir / "mask.png", size)
+        return out
     out = {
         "gt_rgb": pil_to_tensor(load_image(item.item_dir / "gt.png", size)),
         "agnostic_rgb": pil_to_tensor(load_image(item.item_dir / "agnostic.png", size)),

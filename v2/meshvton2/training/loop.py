@@ -25,6 +25,7 @@ class TrainConfig:
     grad_accum: int = 1
     max_grad_norm: float = 1.0
     ckpt_every: int = 500
+    keep_last: int = 2      # eski ckpt'ler silinir (Drive kotası; final.pt etkilenmez)
     log_every: int = 50
     out_dir: str = "v2/checkpoints/stage1"
     extra: dict = field(default_factory=dict)
@@ -85,6 +86,10 @@ class TrainLoop:
             path,
         )
         (path.parent / "latest.pt").write_text(str(path))  # işaretçi dosya
+        # rotasyon: yalnız son keep_last ckpt kalsın (100 adımda bir 1.2GB → kota koruması)
+        olds = sorted(path.parent.glob("ckpt_*.pt"))[: -max(self.cfg.keep_last, 1)]
+        for old in olds:
+            old.unlink(missing_ok=True)
         return path
 
     def resume(self, path: str | Path) -> None:

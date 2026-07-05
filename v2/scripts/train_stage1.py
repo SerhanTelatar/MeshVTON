@@ -33,10 +33,19 @@ from meshvton2.training.loop import TrainConfig, TrainLoop  # noqa: E402
 def build_dataset(cfg: dict, size: tuple[int, int]):
     synth_root = REPO / cfg["data"]["synth_root"]
     real_root = REPO / cfg["data"]["real_root"]
-    synth = SingleViewDataset(discover_synth_items(synth_root), size=size)
-    print(f"sentetik: {len(synth)} öğe ({synth_root})")
+    synth_items = discover_synth_items(synth_root)
+    # latent önbelleği: TÜM öğelerde varsa VAE'siz hızlı yol (precompute_latents.py)
+    use_latents = all((it.item_dir / "latents.pt").exists() for it in synth_items[:50]) and \
+        (synth_items[0].item_dir / "latents.pt").exists()
+    synth = SingleViewDataset(synth_items, size=size, use_latents=use_latents)
+    print(f"sentetik: {len(synth)} öğe ({synth_root}); latent önbelleği: {'AÇIK' if use_latents else 'kapalı'}")
     if real_root.exists():
-        real = SingleViewDataset(discover_flat_items(real_root), size=size)
+        real_items = discover_flat_items(real_root)
+        if use_latents and not (real_items[0].item_dir / "latents.pt").exists():
+            use_latents = False  # karışık mod olmaz; ikisi de latent'li olmalı
+            synth = SingleViewDataset(synth_items, size=size, use_latents=False)
+            print("NOT: gerçek veride latent yok — iki taraf da piksel modunda")
+        real = SingleViewDataset(real_items, size=size, use_latents=use_latents)
         print(f"gerçek: {len(real)} öğe; karışım oranı {cfg['data']['real_ratio']}")
         return MixedDataset(real, synth, primary_ratio=cfg["data"]["real_ratio"])
     print("UYARI: gerçek veri yok — sentetik-only eğitim (domain-gap riski; "
@@ -74,6 +83,7 @@ def main() -> int:
         lora_alpha=cfg["model"]["lora_alpha"],
         ref_dropout=cfg["model"]["ref_dropout"],
         train_guidance=cfg["model"]["train_guidance"],
+        compile_transformer=cfg["model"].get("compile", False),
     ).setup()
 
     t = cfg["train"]
@@ -82,6 +92,7 @@ def main() -> int:
         lr=t["lr"], weight_decay=t["weight_decay"], warmup_steps=0 if args.smoke else t["warmup_steps"],
         grad_accum=1 if args.smoke else t["grad_accum"], max_grad_norm=t["max_grad_norm"],
         ckpt_every=10 ** 9 if args.smoke else t["ckpt_every"], log_every=1 if args.smoke else t["log_every"],
+        keep_last=t.get("keep_last", 2),
         out_dir=str(args.out_dir or REPO / t["out_dir"]),
     )
     loop = TrainLoop(
