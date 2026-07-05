@@ -13,7 +13,9 @@ model:
   lora_alpha: 64
   ref_dropout: 0.1        # görünüm referansını %10 gri yap → geometri kanalı yük taşımayı öğrenir
   train_guidance: 1.0
-  compile: true           # torch.compile (~1.3x; ilk adım dakikalarca derler, başarısızsa uyarıp devam)
+  # compile KAPALI: torch.compile gradient checkpointing'i etkisizleştirip ilk
+  # backward'da 80GB'ı taşırdı (OOM, ölçüldü). Hız zaten latent önbelleğinden geliyor.
+  compile: false
 
 train:
   # Ölçüldü (A100-80GB): bs2xaccum4 = 21.7s/adım -> 8k adım 48 saat, bütçeye fazla.

@@ -15,8 +15,12 @@ Resume otomatiktir (out_dir/latest.pt varsa kaldığı adımdan devam eder).
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
+
+# uzun dizilerde bellek parçalanmasına karşı (OOM sınırında rahatlatır)
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "v2"))
