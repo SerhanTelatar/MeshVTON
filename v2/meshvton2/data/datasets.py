@@ -15,19 +15,21 @@ from meshvton2.data.items import TrainItem, load_item
 
 
 class SingleViewDataset(Dataset):
-    """(örnek, görüş) başına bir öğe — Aşama 1."""
+    """(örnek, görüş) başına bir öğe — Aşama 1. use_latents: VAE'siz hızlı yol."""
 
-    def __init__(self, items: list[TrainItem], size: tuple[int, int] | None = None):
+    def __init__(self, items: list[TrainItem], size: tuple[int, int] | None = None,
+                 use_latents: bool = False):
         if not items:
             raise ValueError("Boş dataset")
         self.items = items
         self.size = size
+        self.use_latents = use_latents
 
     def __len__(self) -> int:
         return len(self.items)
 
     def __getitem__(self, i: int) -> dict:
-        return load_item(self.items[i], self.size)
+        return load_item(self.items[i], self.size, use_latents=self.use_latents)
 
 
 class BundleDataset(Dataset):

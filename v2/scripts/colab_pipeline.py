@@ -279,6 +279,9 @@ def main() -> int:
     # ---- 7. train ----
     if active("train") and can_train:
         banner("7/8 Aşama-1 eğitim (resume'lu)")
+        # Latent ön-hesabı (bir kez ~20-30dk): adımdan VAE+PNG çıkar → ~1.5-2x hız,
+        # sonuç bit-eş (aynı VAE) — resume-safe, mevcutları atlar
+        run(["python", "v2/scripts/precompute_latents.py"], gate=True)
         # checkpoint'ler DOĞRUDAN Drive'a: 20k adım tek oturuma sığmayabilir;
         # kopma anında son ckpt kaybolmasın (latest.pt oradan resume eder)
         out_dir = str(DRIVE_OUT / "stage1") if DRIVE_OUT.parent.parent.exists() else None

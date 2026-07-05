@@ -13,6 +13,7 @@ model:
   lora_alpha: 64
   ref_dropout: 0.1        # görünüm referansını %10 gri yap → geometri kanalı yük taşımayı öğrenir
   train_guidance: 1.0
+  compile: true           # torch.compile (~1.3x; ilk adım dakikalarca derler, başarısızsa uyarıp devam)
 
 train:
   # Ölçüldü (A100-80GB): bs2xaccum4 = 21.7s/adım -> 8k adım 48 saat, bütçeye fazla.
@@ -24,6 +25,7 @@ train:
   warmup_steps: 200
   grad_accum: 1           # efektif batch 4
   max_grad_norm: 1.0
-  ckpt_every: 250         # Drive'a; kopma riski penceresi ~40dk
+  ckpt_every: 100         # Drive'a; rotasyon son 2 ckpt'i tutar (kota koruması)
+  keep_last: 2
   log_every: 25
   out_dir: v2/checkpoints/stage1

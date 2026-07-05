@@ -231,8 +231,10 @@ class FluxTrainModule:
         ref_dropout: float = 0.1,      # referansı %10 gri yap → geometri yük taşımayı öğrenir
         t_mean: float = 0.0,
         t_std: float = 1.0,
+        compile_transformer: bool = False,  # torch.compile (~1.3x; ilk adımda dakikalarca derleme)
         seed: int = 0,
     ):
+        self.compile_transformer = compile_transformer
         self.repo, self.prompt, self.device = repo, prompt, device
         self.lora_rank, self.lora_alpha = lora_rank, lora_alpha
         self.control_in = 64 * control_images
@@ -275,6 +277,14 @@ class FluxTrainModule:
         self.control_embedder = attach_control_embedder(self.transformer, self.control_in)
         self.transformer.enable_gradient_checkpointing()
         self.transformer.train()
+        # ckpt/durum isimleri değişmesin diye ham modül referansı (compile '_orig_mod.' öneki ekler)
+        self._raw_transformer = self.transformer
+        if self.compile_transformer:
+            try:
+                self.transformer = torch.compile(self.transformer, dynamic=False)
+                print("torch.compile aktif — İLK adım dakikalarca sürebilir (derleme), sonrası hızlı")
+            except Exception as e:  # compile başarısızlığı eğitimi durdurmasın
+                print(f"UYARI: torch.compile başarısız ({e}) — derlenmemiş devam")
 
         del pipe.text_encoder, pipe.text_encoder_2, pipe.tokenizer, pipe.tokenizer_2, pipe
         gc.collect()
@@ -292,18 +302,30 @@ class FluxTrainModule:
         z = self.vae.encode(img).latent_dist.sample()
         return (z - self.vae_shift) * self.vae_scale
 
+    def _gray_latent(self, hw: tuple[int, int]) -> torch.Tensor:
+        """ref_dropout için nötr gri görüntünün latent'i (şekil başına bir kez)."""
+        key = tuple(hw)
+        cache = getattr(self, "_gray_cache", None) or {}
+        if key not in cache:
+            gray = torch.zeros(1, 3, hw[0] * 8, hw[1] * 8)
+            cache[key] = self.encode(gray)[0]
+            self._gray_cache = cache
+        return cache[key]
+
     def trainable_parameters(self):
         return (p for p in self.transformer.parameters() if p.requires_grad)
 
     def trainable_state(self) -> dict:
         from meshvton2.model.lora import trainable_state
 
-        return trainable_state(self.transformer)
+        # HAM modül üzerinden: compile sarmalayıcısı isimlere '_orig_mod.' öneki
+        # ekler — ckpt isim uzayı derleme durumundan bağımsız kalmalı (resume uyumu)
+        return trainable_state(getattr(self, "_raw_transformer", self.transformer))
 
     def load_trainable_state(self, state: dict) -> None:
         from meshvton2.model.lora import load_trainable_state
 
-        load_trainable_state(self.transformer, state)
+        load_trainable_state(getattr(self, "_raw_transformer", self.transformer), state)
 
     # -------------------------------- adım -------------------------------- #
 
@@ -316,19 +338,29 @@ class FluxTrainModule:
             sample_logit_normal_t,
         )
 
-        gt = batch["gt_rgb"]
         mask_cpu = batch["inpaint_mask"]
-        x0 = self.encode(gt)
-        masked_lat = self.encode(mask_image_for_fill(batch["agnostic_rgb"], mask_cpu))
-        ctrl_lats = [self.encode(batch["control_normal"]), self.encode(batch["control_depth_sil"])]
-
-        ref = batch["appearance_ref"]
-        if self.ref_dropout > 0:
-            drop = torch.rand(ref.shape[0], generator=self.gen) < self.ref_dropout
-            if drop.any():
-                ref = ref.clone()
-                ref[drop] = 0.0  # [-1,1] ortası = nötr gri görüntü
-        ref_lat = self.encode(ref)
+        if "gt_lat" in batch:  # precompute_latents.py yolu: VAE yok, PNG çözme yok (saf hız)
+            to_dev = lambda k: batch[k].to(self.device, self.vae.dtype)
+            x0 = to_dev("gt_lat")
+            masked_lat = to_dev("masked_lat")
+            ctrl_lats = [to_dev("normal_lat"), to_dev("depth_sil_lat")]
+            ref_lat = to_dev("ref_lat")
+            if self.ref_dropout > 0:
+                drop = torch.rand(ref_lat.shape[0], generator=self.gen) < self.ref_dropout
+                if drop.any():
+                    ref_lat = ref_lat.clone()
+                    ref_lat[drop] = self._gray_latent(ref_lat.shape[-2:])
+        else:
+            x0 = self.encode(batch["gt_rgb"])
+            masked_lat = self.encode(mask_image_for_fill(batch["agnostic_rgb"], mask_cpu))
+            ctrl_lats = [self.encode(batch["control_normal"]), self.encode(batch["control_depth_sil"])]
+            ref = batch["appearance_ref"]
+            if self.ref_dropout > 0:
+                drop = torch.rand(ref.shape[0], generator=self.gen) < self.ref_dropout
+                if drop.any():
+                    ref = ref.clone()
+                    ref[drop] = 0.0  # [-1,1] ortası = nötr gri görüntü
+            ref_lat = self.encode(ref)
 
         b = x0.shape[0]
         noise = torch.randn(x0.shape, generator=self.gen).to(self.device, torch.float32)
