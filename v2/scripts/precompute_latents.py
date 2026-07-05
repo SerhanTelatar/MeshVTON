@@ -46,25 +46,35 @@ def main() -> int:
         items += discover_synth_items(synth_root)
     if real_root.exists():
         items += discover_flat_items(real_root)
-    def _valid(p: Path) -> bool:
-        """Yarım yazılmış dosyayı yakala (disk dolunca kesilen yazım 'var' görünür
-        ama yüklenemez — eğitimi ortasında patlatırdı)."""
+    SLIM_LIMIT = 4 * 1024 * 1024  # sağlıklı latents.pt ~2MB; üstü = şişkin-storage bug'ı
+
+    def _load(p: Path):
         try:
             d = torch.load(p, map_location="cpu", weights_only=True)
-            return all(k in d for k in KEYS)
+            return d if all(k in d for k in KEYS) else None
         except Exception:
-            return False
+            return None
 
-    todo, checked = [], 0
+    todo, slimmed = [], 0
     for it in items:
         p = it.item_dir / "latents.pt"
         if not p.exists():
             todo.append(it)
-        elif not _valid(p):
-            print(f"BOZUK latent (yarım yazım?) yeniden hesaplanacak: {p}")
+            continue
+        d = _load(p)
+        if d is None:  # yarım yazım (disk dolunca kesilen) — yeniden hesapla
+            print(f"BOZUK latent yeniden hesaplanacak: {p}")
             p.unlink()
             todo.append(it)
-        checked += 1
+        elif p.stat().st_size > SLIM_LIMIT:
+            # torch.save DİLİM kaydında altta yatan TÜM batch storage'ını yazıyordu
+            # (2MB'lık dosya 15.7MB) — clone'la incelt; içerik birebir aynı, GPU gerekmez
+            torch.save({k: v.clone().contiguous() for k, v in d.items()}, p)
+            slimmed += 1
+            if slimmed % 1000 == 0:
+                print(f"inceltilen: {slimmed}", flush=True)
+    if slimmed:
+        print(f"şişkin latent inceltildi: {slimmed} dosya (~{slimmed * 13.7 / 1024:.0f} GB geri kazanıldı)")
     print(f"toplam öğe: {len(items)}, hesaplanacak: {len(todo)}")
     if not todo:
         return 0
@@ -92,7 +102,8 @@ def main() -> int:
         lats = encode(torch.stack(pixel_stack))
         for i, it in enumerate(metas):
             group = lats[i * 5 : (i + 1) * 5]
-            torch.save(dict(zip(KEYS, group)), it.item_dir / "latents.pt")
+            # clone ŞART: dilim kaydetmek altta yatan tüm batch storage'ını yazar (15.7MB/2MB şişkinliği)
+            torch.save({k: t.clone().contiguous() for k, t in zip(KEYS, group)}, it.item_dir / "latents.pt")
         done += len(chunk)
         if done % 400 < args.batch:
             print(f"[{done}/{len(todo)}]", flush=True)
