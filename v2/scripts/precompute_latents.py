@@ -46,7 +46,25 @@ def main() -> int:
         items += discover_synth_items(synth_root)
     if real_root.exists():
         items += discover_flat_items(real_root)
-    todo = [it for it in items if not (it.item_dir / "latents.pt").exists()]
+    def _valid(p: Path) -> bool:
+        """Yarım yazılmış dosyayı yakala (disk dolunca kesilen yazım 'var' görünür
+        ama yüklenemez — eğitimi ortasında patlatırdı)."""
+        try:
+            d = torch.load(p, map_location="cpu", weights_only=True)
+            return all(k in d for k in KEYS)
+        except Exception:
+            return False
+
+    todo, checked = [], 0
+    for it in items:
+        p = it.item_dir / "latents.pt"
+        if not p.exists():
+            todo.append(it)
+        elif not _valid(p):
+            print(f"BOZUK latent (yarım yazım?) yeniden hesaplanacak: {p}")
+            p.unlink()
+            todo.append(it)
+        checked += 1
     print(f"toplam öğe: {len(items)}, hesaplanacak: {len(todo)}")
     if not todo:
         return 0
