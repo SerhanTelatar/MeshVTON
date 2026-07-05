@@ -267,9 +267,14 @@ def main() -> int:
     # ---- 6. baseline ----
     if active("baseline") and can_train:
         banner("6/8 Faz 1 zero-shot taban çizgisi")
-        run(["python", "v2/scripts/zero_shot_baseline.py", "--variant", "fill_spatial",
-             "--idm-repo", str(args.idm_repo)], gate=False)
-        sync_drive(eval_dir)
+        done_marker = (eval_dir / "phase1_fill_spatial.json",
+                       DRIVE_OUT / "eval_results" / "phase1_fill_spatial.json")
+        if any(m.exists() for m in done_marker):
+            print("baseline raporu zaten var (lokal/Drive) — atlanıyor")
+        else:
+            run(["python", "v2/scripts/zero_shot_baseline.py", "--variant", "fill_spatial",
+                 "--idm-repo", str(args.idm_repo)], gate=False)
+            sync_drive(eval_dir)
 
     # ---- 7. train ----
     if active("train") and can_train:
