@@ -246,15 +246,23 @@ def main() -> int:
         items_dir = REPO / "v2/data/vitonhd_items"
         if not items_dir.exists():
             restore_from_drive("vitonhd_items.zip", items_dir.parent)
-        cmd = ["python", "v2/scripts/preprocess_vitonhd.py", "--images", str(args.images),
-               "--idm-repo", str(args.idm_repo), "--limit", str(args.vitonhd_limit)]
-        if args.cloth.exists():
-            cmd += ["--cloth", str(args.cloth)]
-        else:
+        if not args.cloth.exists():
             print(f"NOT: {args.cloth} yok — referans, kişinin üzerindeki giysiden "
                   "parse maskesiyle kesilecek (cloth/ bağımlılığı kalktı).")
-        run(cmd, gate=False)
-        archive_to_drive(items_dir, "vitonhd_items.zip")
+        # PARÇALI: her ~500 öğede bir Drive arşivi (script bitmiş öğeyi zaten atlar —
+        # oturum kopması en fazla bir parçalık işi götürür)
+        step = 500
+        for lim in range(step, args.vitonhd_limit + step, step):
+            lim = min(lim, args.vitonhd_limit)
+            done_now = sum(1 for _ in items_dir.glob("*/")) if items_dir.exists() else 0
+            if done_now >= lim:
+                continue
+            cmd = ["python", "v2/scripts/preprocess_vitonhd.py", "--images", str(args.images),
+                   "--idm-repo", str(args.idm_repo), "--limit", str(lim)]
+            if args.cloth.exists():
+                cmd += ["--cloth", str(args.cloth)]
+            run(cmd, gate=False)
+            archive_to_drive(items_dir, "vitonhd_items.zip")
 
     # ---- 6. baseline ----
     if active("baseline") and can_train:
