@@ -20,7 +20,9 @@ from meshvton2.eval import metrics as M
 from meshvton2.eval.golden_set import GoldenManifest
 
 PRED_PATTERN = "{person_id}_{garment_id}_{angle:03d}.png"
-AUX_SUFFIXES = ("person", "mask", "sil", "ref", "gt")
+AUX_SUFFIXES = ("person", "mask", "sil", "ref", "gt", "predsil")
+# predsil = ÜRETİLEN görüntünün parser'dan çıkan giysi maskesi — geo_iou bununla
+# ölçülür (koşullama silüetini koşullamayla kıyaslamak ablation'da sabit çıkar)
 
 
 @dataclass
@@ -71,6 +73,12 @@ def evaluate_item(pred_path: Path) -> dict:
     if "sil" in aux and "mask" in aux:
         values["silhouette_iou"] = M.silhouette_iou(
             _load_mask(aux["mask"], size), _load_mask(aux["sil"], size)
+        )
+
+    if "predsil" in aux and "sil" in aux:
+        # geometri sadakati: ÇIKTIDAKİ giysi bölgesi hedef silüete oturdu mu
+        values["geo_iou"] = M.silhouette_iou(
+            _load_mask(aux["predsil"], size), _load_mask(aux["sil"], size)
         )
 
     if "gt" in aux:
