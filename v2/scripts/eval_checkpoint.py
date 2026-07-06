@@ -36,22 +36,42 @@ from meshvton2.model.flux_tryon import FluxTryOnSampler  # noqa: E402
 from meshvton2.utils.image_utils import tensor_to_pil  # noqa: E402
 
 
+ATR_GARMENT = (4, 7)
+
+
+def _save_predsil(prep, stem) -> None:
+    """ÜRETİLEN görüntünün giysi bölgesini parser'la çıkar → geo_iou'nun girdisi.
+    (Koşullama silüetini koşullamayla kıyaslamak ablation'da sabit çıkıyordu — bug'dı.)"""
+    import cv2
+
+    try:
+        pred_img = np.asarray(Image.open(stem.with_suffix(".png")).convert("RGB"))
+        pp = prep.process(pred_img, size=pred_img.shape[:2])
+        h, w = pred_img.shape[:2]
+        m = np.isin(cv2.resize(pp.parse, (w, h), interpolation=cv2.INTER_NEAREST), ATR_GARMENT)
+        Image.fromarray((m * 255).astype("uint8")).save(f"{stem}.predsil.png")
+    except Exception as e:
+        print(f"  predsil atlandı ({stem.name}): {e}", file=sys.stderr)
+
+
 def run_variant(sampler, combos, ctx, control_scale: float, tag: str) -> dict:
     cfg, out_root, angles = ctx["cfg"], ctx["out_root"], ctx["angles"]
+    prep = ctx["prep"]
     pred_dir = out_root / f"ckpt_{tag}" / "preds"
     pred_dir.mkdir(parents=True, exist_ok=True)
     for i, (person, garment, bundle_by_angle) in enumerate(combos):
         for angle, bundle in bundle_by_angle.items():
             stem = (pred_dir / cfg["pred_pattern"].format(
                 person_id=person.id, garment_id=garment.id, angle=angle)).with_suffix("")
-            if stem.with_suffix(".png").exists():
-                continue
-            pred = sampler.sample(bundle, control_scale=control_scale)
-            Image.fromarray(pred).save(stem.with_suffix(".png"))
-            tensor_to_pil(bundle.appearance_ref).save(f"{stem}.ref.png")
-            Image.fromarray((bundle.inpaint_mask.numpy()[0] * 255).astype("uint8")).save(f"{stem}.mask.png")
-            sil = (bundle.control_depth_sil[2].numpy() > 0).astype("uint8") * 255
-            Image.fromarray(sil).save(f"{stem}.sil.png")
+            if not stem.with_suffix(".png").exists():
+                pred = sampler.sample(bundle, control_scale=control_scale)
+                Image.fromarray(pred).save(stem.with_suffix(".png"))
+                tensor_to_pil(bundle.appearance_ref).save(f"{stem}.ref.png")
+                Image.fromarray((bundle.inpaint_mask.numpy()[0] * 255).astype("uint8")).save(f"{stem}.mask.png")
+                sil = (bundle.control_depth_sil[2].numpy() > 0).astype("uint8") * 255
+                Image.fromarray(sil).save(f"{stem}.sil.png")
+            if not Path(f"{stem}.predsil.png").exists():  # mevcut pred'lere de eklenir (ucuz)
+                _save_predsil(prep, stem)
         print(f"[{tag} {i+1}/{len(combos)}] {person.id}×{garment.id}")
     summary = harness.evaluate(ctx["manifest"], pred_dir, cfg["pred_pattern"])
     harness.write_report(summary, out_root / f"ckpt_{tag}.json")
@@ -107,22 +127,30 @@ def main() -> int:
 
     sampler = FluxTryOnSampler(base["model"]["flux_fill_repo"], checkpoint=args.checkpoint,
                                prompt=base["model"]["prompt"])
-    ctx = {"cfg": cfg, "out_root": out_root, "manifest": manifest, "angles": args.angles}
+    ctx = {"cfg": cfg, "out_root": out_root, "manifest": manifest, "angles": args.angles,
+           "prep": prep}
     s_on = run_variant(sampler, combos, ctx, 1.0, "control_on")
     s_off = run_variant(sampler, combos, ctx, 0.0, "control_off")
 
-    # KAPI: silüet IoU (geometri sadakati) AÇIK >= KAPALI olmalı
+    # KAPI: geo_iou = ÇIKTIDAKİ giysi bölgesi (parse) vs hedef silüet — AÇIK >= KAPALI
     get = lambda s, k: (s["overall"].get(k) or {}).get("mean")
-    iou_on, iou_off = get(s_on, "silhouette_iou"), get(s_off, "silhouette_iou")
+    geo_on, geo_off = get(s_on, "geo_iou"), get(s_off, "geo_iou")
     de_on, de_off = get(s_on, "garment_delta_e"), get(s_off, "garment_delta_e")
     print(f"\n=== ABLATION KAPISI ===")
-    print(f"silhouette_iou : AÇIK={iou_on} KAPALI={iou_off}")
-    print(f"garment_delta_e: AÇIK={de_on} KAPALI={de_off} (düşük iyi)")
-    if iou_on is not None and iou_off is not None and iou_on < iou_off:
-        print("KAPI KALDI: kontrol AÇIK daha kötü — v1 FAZ C senaryosu. Aşama 2'ye GEÇME;"
-              " çare sırası: ref_dropout artır (0.1→0.2) → daha uzun eğitim → FluxControlNet.")
+    print(f"geo_iou (çıktı-silüeti vs hedef): AÇIK={geo_on} KAPALI={geo_off} (yüksek iyi)")
+    print(f"garment_delta_e                 : AÇIK={de_on} KAPALI={de_off} (düşük iyi)")
+    if geo_on is not None and geo_off is not None:
+        if geo_on < geo_off - 0.01:
+            print("KAPI KALDI: kontrol AÇIK geometriyi bozuyor — v1 FAZ C senaryosu. Aşama 2'ye"
+                  " GEÇME; çare sırası: ref_dropout artır (0.1→0.2) → devam eğitimi → FluxControlNet.")
+            return 1
+        print(f"KAPI GEÇTİ (geo_iou farkı: {geo_on - geo_off:+.4f}).")
+        return 0
+    print("UYARI: geo_iou hesaplanamadı (predsil eksik) — kapı ΔE'ye göre değerlendirildi.")
+    if de_on is not None and de_off is not None and de_on > de_off + 1.0:
+        print("KAPI KALDI (ΔE): kontrol AÇIK renk sadakatini bozuyor.")
         return 1
-    print("KAPI GEÇTİ: kontrol katkı sağlıyor (veya en kötü nötr).")
+    print("KAPI GEÇTİ (ΔE bazlı, zayıf sinyal).")
     return 0
 
 
