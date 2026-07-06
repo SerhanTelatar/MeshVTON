@@ -416,8 +416,10 @@ class FluxTryOnSampler:
 
     @torch.no_grad()
     def sample(self, bundle, *, steps: int = 28, seed: int = 0,
-               control_scale: float = 1.0) -> np.ndarray:
+               control_scale: float = 1.0, guidance: float | None = None) -> np.ndarray:
         """bundle: ConditioningBundle (veya aynı alanlara sahip dict-benzeri).
+        guidance: None -> eğitimdeki değer (1.0); FLUX Fill guidance-damıtılmış,
+        yüksek guidance (3.5-30) sadakat/doygunluğu artırır (solgunluk çaresi).
         -> (H,W,3) uint8 try-on; maske dışı agnostic'ten kompozit edilir."""
         from meshvton2.model.reference_tokens import unpack_latents
         from meshvton2.training.flow_matching import make_sigma_schedule
@@ -437,6 +439,7 @@ class FluxTryOnSampler:
             ctrl_lats = [c * control_scale for c in ctrl_lats]
         ref_lat = m.encode(unsq(bundle.appearance_ref))
 
+        g_val = m.train_guidance if guidance is None else guidance
         gen = torch.Generator().manual_seed(seed)
         x = torch.randn((1, 16, lh, lw), generator=gen).to(dev, torch.float32)
         sigmas = make_sigma_schedule(steps, (lh // 2) * (lw // 2)).to(dev)
@@ -448,7 +451,7 @@ class FluxTryOnSampler:
             v = m.transformer(
                 hidden_states=tokens.to(m.transformer.dtype),
                 timestep=sigmas[i].expand(1).to(m.transformer.dtype),
-                guidance=torch.full((1,), m.train_guidance, device=dev, dtype=torch.float32),
+                guidance=torch.full((1,), g_val, device=dev, dtype=torch.float32),
                 pooled_projections=m.pooled_embeds,
                 encoder_hidden_states=m.prompt_embeds,
                 txt_ids=m.text_ids,
