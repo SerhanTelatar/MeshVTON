@@ -14,8 +14,25 @@ import torch
 DEFAULT_TARGETS = ("to_q", "to_k", "to_v", "to_out.0", "ff.net.0.proj", "ff.net.2")
 
 
+def _silence_torchao_check() -> None:
+    """peft'in torchao sürüm denetimi, torchao YÜKLÜ ama <0.16 ise (Colab imajı)
+    ImportError RAISE ediyor — oysa False dönmeliydi. torchao KULLANMIYORUZ;
+    her iki bağlanma noktasında da is_torchao_available -> False (kalıcı, pip'e
+    bağımlı değil; uninstall her oturum tekrarı gerekmez)."""
+    import importlib
+
+    for modname in ("peft.import_utils", "peft.tuners.lora.torchao"):
+        try:
+            m = importlib.import_module(modname)
+            if hasattr(m, "is_torchao_available"):
+                m.is_torchao_available = lambda: False
+        except Exception:
+            pass
+
+
 def attach_lora(transformer, *, rank: int = 64, alpha: int = 64, targets=DEFAULT_TARGETS):
     """FluxTransformer2DModel'e LoRA ekler (diffusers PeftAdapterMixin.add_adapter)."""
+    _silence_torchao_check()
     from peft import LoraConfig
 
     cfg = LoraConfig(
