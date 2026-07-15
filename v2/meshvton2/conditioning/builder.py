@@ -137,6 +137,7 @@ def build_conditioning(
     device: str = "cpu",
     person_prep: Any | None = None,  # PersonPrep — foto modunda ZORUNLU (agnostic+mask kaynağı)
     appearance_ref_image: np.ndarray | None = None,  # garment=None modunda ZORUNLU (ürün fotoğrafı)
+    geometry_mask: bool = True,  # foto+mesh: maske = parse ∪ dilate(giysi silüeti); False = yalnız parse
 ) -> ConditioningBundle:
     """Koşullama demetini üretir.
 
@@ -181,6 +182,7 @@ def build_conditioning(
     return _build_impl_real(
         person_image, smplx_params, garment, view, size=size, device=device,
         person_prep=person_prep, appearance_ref_image=appearance_ref_image,
+        geometry_mask=geometry_mask,
     )
 
 
@@ -241,7 +243,7 @@ ATR_GARMENT_LABELS = (4, 7)  # upper_clothes, dress — parse'tan giysi silüeti
 
 def _build_impl_real(
     person_image, smplx_params, garment, view, *, size, device,
-    person_prep=None, appearance_ref_image=None,
+    person_prep=None, appearance_ref_image=None, geometry_mask=True,
 ):
     import cv2
 
@@ -309,6 +311,18 @@ def _build_impl_real(
         mask_u8 = person_prep.mask
         if agnostic.shape[:2] != (hgt, wdt):
             raise ValueError(f"person_prep boyutu {agnostic.shape[:2]} != hedef {(hgt, wdt)}")
+        if garment is not None and geometry_mask:
+            # HİZALAMA DÜZELTMESİ: parse maskesi kişinin ESKİ giysisini işaretler;
+            # mesh silüeti ondan geniş/kaymış olabilir → model maskeye hapsolur,
+            # geometri dışarıda "hayalet" bırakır. Maske = parse ∪ dilate(sil)
+            # (sentetik eğitim maskesi de dilate(sil) — aynı rejim, bkz. yukarısı).
+            from meshvton2.conditioning.person import apply_agnostic
+
+            kernel = np.ones((wdt // 30, wdt // 30), np.uint8)
+            sil_u8 = cv2.dilate((geo["garment_sil"] * 255).astype(np.uint8), kernel)
+            mask_u8 = np.maximum(mask_u8, sil_u8)
+            agnostic = apply_agnostic(person_prep.image, mask_u8)
+            meta["mask_source"] = "parse+garment_sil"
 
     return ConditioningBundle(
         agnostic_rgb=_to_tensor01(agnostic.astype(np.float32) / 255.0),
