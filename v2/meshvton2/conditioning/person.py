@@ -46,6 +46,29 @@ def apply_agnostic(image: np.ndarray, mask: np.ndarray, fill: int = GRAY) -> np.
     return out
 
 
+def person_square_bbox(prep: PersonPrep, pad: float = 0.10) -> np.ndarray:
+    """Parse'tan kişi-merkezli KARE bbox (hedef çözünürlükte köşeler: x0,y0,x1,y1).
+
+    detect_person_bbox'ın tam-kare varsayılanı 'kişi merkezde ve kadrajı dolduruyor'
+    varsayımına dayanır; off-center/küçük kişide weak_persp_to_full'un offset
+    terimlerini sıfırlayıp gövdeyi görüntü merkezine kaydırır. Bu bbox gerçek kişi
+    bölgesinden türetilir; kare olduğu için HMR2'nin crop sözleşmesini korur
+    (taşma regress'te sıfır-padding ile çözülür)."""
+    ys, xs = np.nonzero(prep.parse > 0)
+    if len(xs) == 0:
+        raise ValueError("Parse'ta kişi bölgesi yok — bbox türetilemedi")
+    h, w = prep.image.shape[:2]
+    ph, pw = prep.parse.shape[:2]
+    sx, sy = w / pw, h / ph
+    x0, x1 = xs.min() * sx, (xs.max() + 1) * sx
+    y0, y1 = ys.min() * sy, (ys.max() + 1) * sy
+    side = max(x1 - x0, y1 - y0) * (1.0 + pad)
+    cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+    return np.array(
+        [cx - side / 2, cy - side / 2, cx + side / 2, cy + side / 2], dtype=np.float32
+    )
+
+
 class PersonPreprocessor:
     """IDM-VTON preprocess sarmalayıcısı. Ağır modeller ilk process() çağrısında yüklenir."""
 
