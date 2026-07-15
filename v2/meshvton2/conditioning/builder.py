@@ -138,6 +138,7 @@ def build_conditioning(
     person_prep: Any | None = None,  # PersonPrep — foto modunda ZORUNLU (agnostic+mask kaynağı)
     appearance_ref_image: np.ndarray | None = None,  # garment=None modunda ZORUNLU (ürün fotoğrafı)
     geometry_mask: bool = True,  # foto+mesh: maske = parse ∪ dilate(giysi silüeti); False = yalnız parse
+    hang_pad: float = 0.06,  # giysi üst kenarının omuz/pelvis referansına göre askı payı [m]
 ) -> ConditioningBundle:
     """Koşullama demetini üretir.
 
@@ -182,7 +183,7 @@ def build_conditioning(
     return _build_impl_real(
         person_image, smplx_params, garment, view, size=size, device=device,
         person_prep=person_prep, appearance_ref_image=appearance_ref_image,
-        geometry_mask=geometry_mask,
+        geometry_mask=geometry_mask, hang_pad=hang_pad,
     )
 
 
@@ -196,7 +197,7 @@ def _to_tensor01(img01: np.ndarray) -> torch.Tensor:
     return torch.from_numpy(np.ascontiguousarray(img01.transpose(2, 0, 1))).float() * 2.0 - 1.0
 
 
-def _prealign_garment(gverts: np.ndarray, rest: dict, garment_id: str = "") -> np.ndarray:
+def _prealign_garment(gverts: np.ndarray, rest: dict, garment_id: str = "", hang_pad: float = 0.06) -> np.ndarray:
     """Bağlama öncesi hizalama: ÖLÇEK YOK, sadece eksen çevir + askı hizala.
 
     Ders zinciri (QA'da yakalandı): (1) gövde-genişliği ölçeği T-poz kulaç
@@ -215,24 +216,30 @@ def _prealign_garment(gverts: np.ndarray, rest: dict, garment_id: str = "") -> n
     g = zup_to_yup(np.asarray(gverts, np.float64))  # metrik ölçek KORUNUR
     g[:, 0] += pelvis[0] - (g[:, 0].max() + g[:, 0].min()) / 2.0
     g[:, 2] += pelvis[2] - (g[:, 2].max() + g[:, 2].min()) / 2.0
-    hang_y = (pelvis[1] + 0.06) if "lower_body" in garment_id else (mid_sh[1] + 0.06)
+    # hang_pad ayarlanabilir: +0.06 bazı CLOTH3D üstlerinde ~10cm fazla yüksek
+    # çıkıyor (yaka çene hizasına asılıp K-NN'de boyun/kafaya bağlanıyor) —
+    # teşhis overlay'i ile kalibre edilir (interactive_tryon 5. hücre).
+    hang_y = (pelvis[1] + hang_pad) if "lower_body" in garment_id else (mid_sh[1] + hang_pad)
     g[:, 1] += hang_y - g[:, 1].max()  # rest gövde y-YUKARI: üst kenar = max(y)
     return g
 
 
-def _get_binding(garment: GarmentAsset, body_model) -> "GarmentBinding":  # noqa: F821
-    """Giysi bağlamasını cache'ten yükler ya da rest gövdeye kurar ve cache'ler."""
+def _get_binding(garment: GarmentAsset, body_model, hang_pad: float = 0.06) -> "GarmentBinding":  # noqa: F821
+    """Giysi bağlamasını cache'ten yükler ya da rest gövdeye kurar ve cache'ler.
+    NOT: cache yalnız varsayılan hang_pad için geçerlidir — farklı pad'de
+    yeniden kurulur (eski cache yanlış askı yüksekliğini dondurur)."""
     from meshvton2.conditioning.lbs_drape import GarmentBinding, bind_garment
 
-    if garment.lbs_cache and Path(garment.lbs_cache).exists():
+    use_cache = garment.lbs_cache and hang_pad == 0.06
+    if use_cache and Path(garment.lbs_cache).exists():
         try:
             return GarmentBinding.load(garment.lbs_cache)
         except Exception:  # paralel işçi yarışında yarım yazılmış cache — yeniden kur
             pass
     rest = body_model.rest()
-    aligned = _prealign_garment(garment.verts, rest, garment.garment_id)
+    aligned = _prealign_garment(garment.verts, rest, garment.garment_id, hang_pad=hang_pad)
     binding = bind_garment(aligned, rest["verts"], rest["faces"])
-    if garment.lbs_cache:
+    if use_cache:
         Path(garment.lbs_cache).parent.mkdir(parents=True, exist_ok=True)
         binding.save(garment.lbs_cache)
     return binding
@@ -243,7 +250,7 @@ ATR_GARMENT_LABELS = (4, 7)  # upper_clothes, dress — parse'tan giysi silüeti
 
 def _build_impl_real(
     person_image, smplx_params, garment, view, *, size, device,
-    person_prep=None, appearance_ref_image=None, geometry_mask=True,
+    person_prep=None, appearance_ref_image=None, geometry_mask=True, hang_pad=0.06,
 ):
     import cv2
 
@@ -269,7 +276,7 @@ def _build_impl_real(
 
     if garment is not None:
         # 2) Drape: rest-binding (cache'li) -> pozlu gövdeye uygula -> clearance
-        binding = _get_binding(garment, body_model)
+        binding = _get_binding(garment, body_model, hang_pad=hang_pad)
         gverts = apply_binding(binding, body["verts"])
         gverts, clearance_ratio, pen_depth = push_clearance(gverts, body["verts"], body["faces"])
         # Patlama dedektörü: drape edilmiş giysi gövdeden ne kadar büyük?
