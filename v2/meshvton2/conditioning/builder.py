@@ -288,7 +288,18 @@ def _build_impl_real(
         # 3) Ekran-uzayı geometri + görünüm referansı (mesh render'ı)
         geo = render_geometry(body["verts"], body["faces"], gverts, garment.faces, cam, size=size)
         garment_sil = geo["garment_sil"].astype(np.float32)
-        appearance01 = render_appearance_ref(garment, size=size).astype(np.float32) / 255.0
+        # TEZ KARARI (2026-07): sistem TEXTURESUZ çalışır — texture yoksa referans,
+        # gri kumaşlı ŞEKİLLİ render'dır (düz gri kart değil: giysinin formu modele
+        # geçer, renk/desen iddiası yoktur). Texture varsa yine kullanılır.
+        ref_asset = garment
+        if garment.texture is None:
+            from dataclasses import replace as _dc_replace
+            ref_asset = _dc_replace(
+                garment,
+                texture=np.full((8, 8, 3), 200, np.uint8),
+                uv=garment.uv if garment.uv is not None else np.zeros((len(garment.verts), 2), np.float32),
+            )
+        appearance01 = render_appearance_ref(ref_asset, size=size).astype(np.float32) / 255.0
         meta.update(garment_id=garment.garment_id, clearance_ratio=clearance_ratio,
                     penetration_depth=pen_depth, drape_extent_ratio=extent_ratio)
     else:
