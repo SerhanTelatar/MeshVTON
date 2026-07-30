@@ -416,10 +416,15 @@ class FluxTryOnSampler:
 
     @torch.no_grad()
     def sample(self, bundle, *, steps: int = 28, seed: int = 0,
-               control_scale: float = 1.0, guidance: float | None = None) -> np.ndarray:
+               control_scale: float = 1.0, guidance: float | None = None,
+               return_raw: bool = False):
         """bundle: ConditioningBundle (veya aynı alanlara sahip dict-benzeri).
         guidance: None -> eğitimdeki değer (1.0); FLUX Fill guidance-damıtılmış,
         yüksek guidance (3.5-30) sadakat/doygunluğu artırır (solgunluk çaresi).
+        return_raw: True ise (composited, raw_pred) döner — raw_pred kompozit
+        ÖNCESİ VAE çıktısıdır (maske dışı geri-yapıştırma yok); saydamlık/leke
+        modelin üretiminden mi yoksa kompozit kenar yumuşatmasından mı geldiğini
+        ayırt etmek için (bkz. [[meshvton-v2-inference-alignment]] teşhis akışı).
         -> (H,W,3) uint8 try-on; maske dışı agnostic'ten kompozit edilir."""
         from meshvton2.model.reference_tokens import unpack_latents
         from meshvton2.training.flow_matching import make_sigma_schedule
@@ -467,4 +472,5 @@ class FluxTryOnSampler:
 
         person = ((bundle.agnostic_rgb.clamp(-1, 1) + 1) / 2 * 255).byte().permute(1, 2, 0).numpy()
         mask_u8 = (bundle.inpaint_mask[0].numpy() * 255).astype(np.uint8)
-        return composite_outside_mask(pred, person, mask_u8)
+        composited = composite_outside_mask(pred, person, mask_u8)
+        return (composited, pred) if return_raw else composited
