@@ -77,6 +77,7 @@ def main() -> int:
                 garments_root / garment.mesh,
                 texture_path=garments_root / garment.texture if garment.texture else None,
                 garment_id=garment.id,
+                allow_untextured=True,
             )
             bundle = build_conditioning(pp.image, params, asset, PhotoView(), size=size, person_prep=pp)
             combos.append((person, garment, bundle))

@@ -10,8 +10,8 @@ Kullanım (Colab'da, veri mevcutken):
 
 - --person-list verilmezse test setinden eşit aralıklı 20 görüntü seçilir ve
   UYARI basılır: yan/¾ pozlar ve 2-3 VITON-dışı foto için liste ELLE düzenlenmeli.
-- Giysiler: sibling texture PNG'si olan klasörler tercih edilir (v1 Probe D dersi:
-  texturesiz mesh golden set'e giremez).
+- Giysiler: appearance ref builder'da HER ZAMAN düz griye çevrildiği için (KALICI
+  texturesuz kural) texture'lı/texture'sız ayrımı yapılmaz, geçerli her mesh seçilebilir.
 - Görüntüler v2/data/golden/persons/ altına kopyalanır (gitignored); manifest.json
   commit'lenir.
 """
@@ -43,7 +43,8 @@ def find_texture(garment_dir: Path) -> Path | None:
 
 def pick_garments(garments_root: Path, ids: list[str] | None) -> list[GoldenGarment]:
     """Giysi klasörlerini ÖZYİNELEMELİ bulur (CLOTH3D düzeni: kategori/giysi/model.obj).
-    Otomatik seçimde upper_body öncelikli (plan: tops-first) ve texture şart."""
+    Otomatik seçimde upper_body öncelikli (plan: tops-first); texture şart DEĞİL
+    (appearance ref builder'da her durumda griye çevrilir)."""
     out = []
     if ids:
         dirs = [garments_root / gid for gid in ids]
@@ -58,8 +59,6 @@ def pick_garments(garments_root: Path, ids: list[str] | None) -> list[GoldenGarm
             print(f"UYARI: {d} içinde .obj yok, atlanıyor", file=sys.stderr)
             continue
         tex = find_texture(d)
-        if tex is None and not ids:
-            continue  # otomatik seçimde texturesiz giysi golden set'e giremez
         rel = d.relative_to(garments_root)
         out.append(
             GoldenGarment(

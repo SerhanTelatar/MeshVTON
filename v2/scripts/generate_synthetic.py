@@ -27,7 +27,12 @@ from meshvton2.synth.generate import generate  # noqa: E402
 
 
 def discover_assets(garments_root: Path, cache_dir: Path, limit: int | None):
-    """Texture'lı giysi klasörlerini özyinelemeli bulur; upper_body öncelikli."""
+    """Giysi klasörlerini özyinelemeli bulur; upper_body öncelikli.
+
+    KALICI KURAL: appearance ref builder'da HER ZAMAN düz griye çevrilir
+    (texture var/yok fark etmez) — bu yüzden burada texture'lı/texture'sız
+    ayrımı yapılmaz; geçerli her mesh kullanılabilir.
+    """
     from dataclasses import replace
 
     dirs = sorted({p.parent for p in garments_root.rglob("*.obj")})
@@ -38,17 +43,16 @@ def discover_assets(garments_root: Path, cache_dir: Path, limit: int | None):
     for d in dirs:
         try:
             gid = str(d.relative_to(garments_root)).replace("/", "__")
-            a = load_garment_asset(sorted(d.glob("*.obj"))[0], garment_id=gid)
+            a = load_garment_asset(sorted(d.glob("*.obj"))[0], garment_id=gid, allow_untextured=True)
             assets.append(replace(a, lbs_cache=str(cache_dir / f"{gid}.lbs.npz")))
-        except (ValueError, IndexError):  # texturesiz/bozuk giysi: say, spam'leme
+        except (ValueError, IndexError):  # bozuk mesh: say, spam'leme
             skipped.append(d.name)
         if limit and len(assets) >= limit:
             break
     if skipped:
-        print(f"ATLANDI: {len(skipped)} texturesiz/bozuk giysi (ilk 3: {skipped[:3]}) — "
-              "v1 gri-render dersi gereği bilinçli", file=sys.stderr)
+        print(f"ATLANDI: {len(skipped)} bozuk giysi (ilk 3: {skipped[:3]})", file=sys.stderr)
     if not assets:
-        raise SystemExit(f"HATA: {garments_root} altında kullanılabilir (texture'lı) giysi yok")
+        raise SystemExit(f"HATA: {garments_root} altında kullanılabilir giysi yok")
     print(f"KULLANILABİLİR GİYSİ: {len(assets)}")
     return assets
 

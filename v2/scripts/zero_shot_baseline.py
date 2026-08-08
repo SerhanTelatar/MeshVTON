@@ -29,7 +29,7 @@ from PIL import Image  # noqa: E402
 
 from meshvton2.conditioning.garment import load_garment_asset  # noqa: E402
 from meshvton2.conditioning.person import PersonPreprocessor  # noqa: E402
-from meshvton2.conditioning.render import render_appearance_ref  # noqa: E402
+from meshvton2.conditioning.render import force_textureless, render_appearance_ref  # noqa: E402
 from meshvton2.eval import harness  # noqa: E402
 from meshvton2.eval.golden_set import load_manifest  # noqa: E402
 from meshvton2.model.flux_tryon import VARIANTS, FluxTryOn  # noqa: E402
@@ -83,8 +83,9 @@ def main() -> int:
                     garments_root / garment.mesh,
                     texture_path=garments_root / garment.texture if garment.texture else None,
                     garment_id=garment.id,
+                    allow_untextured=True,
                 )
-                ref_cache[garment.id] = render_appearance_ref(asset, size=(h, w))
+                ref_cache[garment.id] = render_appearance_ref(force_textureless(asset), size=(h, w))
             ref = ref_cache[garment.id]
 
             pred = model.tryon(pp.image, pp.agnostic, pp.mask, ref, seed=args.seed)
