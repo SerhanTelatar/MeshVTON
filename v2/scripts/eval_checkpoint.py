@@ -110,6 +110,7 @@ def main() -> int:
                 garments_root / garment.mesh,
                 texture_path=garments_root / garment.texture if garment.texture else None,
                 garment_id=garment.id,
+                allow_untextured=True,
             )
             bundles = {
                 a: build_conditioning(

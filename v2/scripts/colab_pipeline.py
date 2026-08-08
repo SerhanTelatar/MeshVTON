@@ -6,14 +6,18 @@ Aşamalar (sırayla; biten aşama tekrar koşulmaz):
   2. camera    : Faz 2 kapısı — reprojection IoU >= 0.70 (KALIRSA DURUR)
   3. smoke     : sentetik duman testi (5 örnek) + QA kontak-sheet'i Drive'a
   4. synth     : tam sentetik üretim (--num, varsayılan 2000; 4 görüş/örnek)
-  5. vitonhd   : gerçek veri ön-işleme (--vitonhd-limit)
-  6. baseline  : Faz 1 zero-shot taban çizgisi (fill_spatial, tam golden set)
-  7. train     : Aşama-1 eğitim (resume'lu; Colab koparsa tekrar Run all yeter)
-  8. eval      : golden set değerlendirme + kontrol-ablation kapısı
+  5. baseline  : Faz 1 zero-shot taban çizgisi (fill_spatial, tam golden set)
+  6. train     : Aşama-1 eğitim (resume'lu; Colab koparsa tekrar Run all yeter)
+  7. eval      : golden set değerlendirme + kontrol-ablation kapısı
+
+NOT: VITON-HD gerçek-foto yolu (preprocess_vitonhd.py) bilinçli olarak pipeline'a
+DAHİL DEĞİL — appearance ref orada mesh yok, tek sinyal renkli ürün fotoğrafı/kırpım,
+bu da projenin KALICI texturesuz kuralına aykırı düşer. Script tooling olarak duruyor,
+ama varsayılan eğitim akışı sadece sentetik (texture'sız-gri) veriyle çalışır.
 
 Kullanım (notebook tek hücre):
   python v2/scripts/colab_pipeline.py --idm-repo /content/IDM-VTON \\
-      [--until train] [--num 2000] [--vitonhd-limit 2000] [--skip baseline]
+      [--until train] [--num 2000] [--skip baseline]
 
 Her aşama sonrası kritik çıktılar Drive'a kopyalanır (mount edilmişse):
   /content/drive/MyDrive/MeshVTON/v2_outputs/
@@ -29,7 +33,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 DRIVE_OUT = Path("/content/drive/MyDrive/MeshVTON/v2_outputs")
-STAGES = ("check", "camera", "smoke", "synth", "vitonhd", "baseline", "train", "eval")
+STAGES = ("check", "camera", "smoke", "synth", "baseline", "train", "eval")
 
 
 def banner(msg: str) -> None:
@@ -104,10 +108,8 @@ def main() -> int:
     ap.add_argument("--idm-repo", type=Path, default=Path("/content/IDM-VTON"))
     ap.add_argument("--garments", type=Path, default=REPO / "data/garments_3d")
     ap.add_argument("--images", type=Path, default=REPO / "data/raw/images")
-    ap.add_argument("--cloth", type=Path, default=REPO / "data/raw/cloth")
     ap.add_argument("--poses", type=Path, default=REPO / "data/smplx_params")
     ap.add_argument("--num", type=int, default=2000, help="sentetik örnek sayısı")
-    ap.add_argument("--vitonhd-limit", type=int, default=2000)
     ap.add_argument("--train-steps", type=int, default=20000)
     ap.add_argument("--until", choices=STAGES, default="eval")
     ap.add_argument("--skip", action="append", default=[], choices=STAGES)
@@ -122,7 +124,7 @@ def main() -> int:
         return STAGES.index(stage) <= until and stage not in args.skip
 
     # ---- 1. check ----
-    banner("1/8 ortam kontrolü")
+    banner("1/7 ortam kontrolü")
     try:
         head = subprocess.check_output(["git", "-C", str(REPO), "log", "--oneline", "-1"], text=True).strip()
         print(f"repo: {head}")  # düzeltmelerin gelip gelmediği buradan doğrulanır
@@ -158,7 +160,7 @@ def main() -> int:
 
     # ---- 2. camera gate ----
     if active("camera"):
-        banner("2/8 kamera doğrulama kapısı (IoU >= 0.70)")
+        banner("2/7 kamera doğrulama kapısı (IoU >= 0.70)")
         if not (REPO / "v2/data/golden/manifest.json").exists():
             run(["python", "v2/scripts/build_golden_set.py",
                  "--vitonhd-test", str(args.images), "--garments", str(args.garments)], gate=True)
@@ -168,7 +170,7 @@ def main() -> int:
 
     # ---- 3. smoke + QA ----
     if active("smoke"):
-        banner("3/8 sentetik duman testi + QA sheet")
+        banner("3/7 sentetik duman testi + QA sheet")
         # pairs.csv değil ÖRNEK sayısına bak: başarısız koşu header'lı boş csv bırakabilir
         n_existing = sum(1 for _ in synth_dir.glob("s*_*/")) if synth_dir.exists() else 0
         if n_existing:
@@ -189,7 +191,7 @@ def main() -> int:
 
     # ---- 4. full synth ----
     if active("synth"):
-        banner(f"4/8 tam sentetik üretim (hedef {args.num} YAZILMIŞ örnek × 4 görüş)")
+        banner(f"4/7 tam sentetik üretim (hedef {args.num} YAZILMIŞ örnek × 4 görüş)")
         count = lambda: sum(1 for _ in synth_dir.glob("s*_*/")) if synth_dir.exists() else 0
 
         def _version_ok() -> bool:
@@ -240,33 +242,9 @@ def main() -> int:
         print(f"sentetik veri hazır: {existing} örnek")
         sync_drive(synth_dir / "pairs.csv")
 
-    # ---- 5. vitonhd ----
-    if active("vitonhd"):
-        banner("5/8 VITON-HD ön-işleme")
-        items_dir = REPO / "v2/data/vitonhd_items"
-        if not items_dir.exists():
-            restore_from_drive("vitonhd_items.zip", items_dir.parent)
-        if not args.cloth.exists():
-            print(f"NOT: {args.cloth} yok — referans, kişinin üzerindeki giysiden "
-                  "parse maskesiyle kesilecek (cloth/ bağımlılığı kalktı).")
-        # PARÇALI: her ~500 öğede bir Drive arşivi (script bitmiş öğeyi zaten atlar —
-        # oturum kopması en fazla bir parçalık işi götürür)
-        step = 500
-        for lim in range(step, args.vitonhd_limit + step, step):
-            lim = min(lim, args.vitonhd_limit)
-            done_now = sum(1 for _ in items_dir.glob("*/")) if items_dir.exists() else 0
-            if done_now >= lim:
-                continue
-            cmd = ["python", "v2/scripts/preprocess_vitonhd.py", "--images", str(args.images),
-                   "--idm-repo", str(args.idm_repo), "--limit", str(lim)]
-            if args.cloth.exists():
-                cmd += ["--cloth", str(args.cloth)]
-            run(cmd, gate=False)
-            archive_to_drive(items_dir, "vitonhd_items.zip")
-
-    # ---- 6. baseline ----
+    # ---- 5. baseline ----
     if active("baseline") and can_train:
-        banner("6/8 Faz 1 zero-shot taban çizgisi")
+        banner("5/7 Faz 1 zero-shot taban çizgisi")
         done_marker = (eval_dir / "phase1_fill_spatial.json",
                        DRIVE_OUT / "eval_results" / "phase1_fill_spatial.json")
         if any(m.exists() for m in done_marker):
@@ -276,9 +254,9 @@ def main() -> int:
                  "--idm-repo", str(args.idm_repo)], gate=False)
             sync_drive(eval_dir)
 
-    # ---- 7. train ----
+    # ---- 6. train ----
     if active("train") and can_train:
-        banner("7/8 Aşama-1 eğitim (resume'lu)")
+        banner("6/7 Aşama-1 eğitim (resume'lu)")
         # Latent ön-hesabı (bir kez ~20-30dk): adımdan VAE+PNG çıkar → ~1.5-2x hız,
         # sonuç bit-eş (aynı VAE) — resume-safe, mevcutları atlar
         run(["python", "v2/scripts/precompute_latents.py"], gate=True)
@@ -290,9 +268,9 @@ def main() -> int:
             cmd += ["--out-dir", out_dir]
         run(cmd, gate=True)
 
-    # ---- 8. eval ----
+    # ---- 7. eval ----
     if active("eval") and can_train:
-        banner("8/8 değerlendirme")
+        banner("7/7 değerlendirme")
         preds = eval_dir / "phase1_fill_spatial" / "preds"
         if preds.exists():
             run(["python", "v2/scripts/eval.py", "--pred-dir", str(preds), "--name", "final"], gate=False)

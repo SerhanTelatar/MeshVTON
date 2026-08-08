@@ -257,7 +257,12 @@ def _build_impl_real(
     from meshvton2.conditioning import camera as cam_mod
     from meshvton2.conditioning.body import get_body_model
     from meshvton2.conditioning.lbs_drape import apply_binding, push_clearance
-    from meshvton2.conditioning.render import render_appearance_ref, render_geometry, render_textured_scene
+    from meshvton2.conditioning.render import (
+        force_textureless,
+        render_appearance_ref,
+        render_geometry,
+        render_textured_scene,
+    )
 
     if person_image is not None and person_prep is None:
         raise ValueError(
@@ -288,18 +293,11 @@ def _build_impl_real(
         # 3) Ekran-uzayı geometri + görünüm referansı (mesh render'ı)
         geo = render_geometry(body["verts"], body["faces"], gverts, garment.faces, cam, size=size)
         garment_sil = geo["garment_sil"].astype(np.float32)
-        # TEZ KARARI (2026-07): sistem TEXTURESUZ çalışır — texture yoksa referans,
+        # KALICI KURAL: sistem TEXTURESUZ çalışır — appearance ref HER ZAMAN düz
         # gri kumaşlı ŞEKİLLİ render'dır (düz gri kart değil: giysinin formu modele
-        # geçer, renk/desen iddiası yoktur). Texture varsa yine kullanılır.
-        ref_asset = garment
-        if garment.texture is None:
-            from dataclasses import replace as _dc_replace
-            ref_asset = _dc_replace(
-                garment,
-                texture=np.full((8, 8, 3), 200, np.uint8),
-                uv=garment.uv if garment.uv is not None else np.zeros((len(garment.verts), 2), np.float32),
-            )
-        appearance01 = render_appearance_ref(ref_asset, size=size).astype(np.float32) / 255.0
+        # geçer, renk/desen bilgisi asla geçmez), garment.texture var olsun ya da
+        # olmasın (bkz. proje kuralı: appearance sadakati hedef değil).
+        appearance01 = render_appearance_ref(force_textureless(garment), size=size).astype(np.float32) / 255.0
         meta.update(garment_id=garment.garment_id, clearance_ratio=clearance_ratio,
                     penetration_depth=pen_depth, drape_extent_ratio=extent_ratio)
     else:

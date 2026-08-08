@@ -35,6 +35,19 @@ def center_unit(verts: np.ndarray) -> np.ndarray:
     return v / max(r, 1e-8)
 
 
+def force_textureless(asset: GarmentAsset) -> GarmentAsset:
+    """KALICI KURAL: appearance ref'e asla gerçek texture geçmez — yalnız giysinin
+    şekli (düz gri kumaş render'ı), renk/desen asla. `asset.texture` var olsun ya
+    da olmasın uygulanır (eğitim/eval/inference'ta tek ortak yol)."""
+    from dataclasses import replace
+
+    return replace(
+        asset,
+        texture=np.full((8, 8, 3), 200, np.uint8),
+        uv=asset.uv if asset.uv is not None else np.zeros((len(asset.verts), 2), np.float32),
+    )
+
+
 def render_appearance_ref(
     asset: GarmentAsset,
     *,
