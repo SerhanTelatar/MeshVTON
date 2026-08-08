@@ -118,6 +118,10 @@ def main() -> int:
     until = STAGES.index(args.until)
     eval_dir = REPO / "v2/eval_results"
     synth_dir = REPO / "v2/data/synth"
+    # train_stage1.py'nin varsayılanıyla eşleşir (stage1_singleview.yaml: train.out_dir);
+    # Drive mount edilmişse checkpoint doğrudan oraya (oturum kopmasına karşı), değilse yerel.
+    stage1_out_dir = (DRIVE_OUT / "stage1") if DRIVE_OUT.parent.parent.exists() \
+        else (REPO / "v2/checkpoints/stage1")
     can_train = True
 
     def active(stage: str) -> bool:
@@ -196,7 +200,7 @@ def main() -> int:
 
         def _version_ok() -> bool:
             vf = synth_dir / "DATA_VERSION"
-            return vf.exists() and vf.read_text().strip() == "2"
+            return vf.exists() and vf.read_text().strip() == "3"
 
         existing = count()
         if existing < args.num:
@@ -262,18 +266,35 @@ def main() -> int:
         run(["python", "v2/scripts/precompute_latents.py"], gate=True)
         # checkpoint'ler DOĞRUDAN Drive'a: 20k adım tek oturuma sığmayabilir;
         # kopma anında son ckpt kaybolmasın (latest.pt oradan resume eder)
-        out_dir = str(DRIVE_OUT / "stage1") if DRIVE_OUT.parent.parent.exists() else None
-        cmd = ["python", "v2/scripts/train_stage1.py", "--max-steps", str(args.train_steps)]
-        if out_dir:
-            cmd += ["--out-dir", out_dir]
-        run(cmd, gate=True)
+        run(["python", "v2/scripts/train_stage1.py", "--max-steps", str(args.train_steps),
+             "--out-dir", str(stage1_out_dir)], gate=True)
 
     # ---- 7. eval ----
     if active("eval") and can_train:
-        banner("7/7 değerlendirme")
-        preds = eval_dir / "phase1_fill_spatial" / "preds"
-        if preds.exists():
-            run(["python", "v2/scripts/eval.py", "--pred-dir", str(preds), "--name", "final"], gate=False)
+        banner("7/7 değerlendirme (eğitilmiş checkpoint + kontrol-ablation kapısı)")
+        # final.pt yalnız eğitim max-steps'e ULAŞIP bitince yazılır (train_stage1.py).
+        # Eğitim yarıda kesildiyse (--skip train ile buraya atlandıysa) final.pt yok —
+        # bu durumda TrainLoop.save()'in yazdığı "latest.pt" işaretçisini çözüp
+        # en son periyodik checkpoint'i (ckpt_XXXXXX.pt) kullan (kısmi ilerleme de
+        # değerlendirilebilsin).
+        final_ckpt = stage1_out_dir / "final.pt"
+        latest_ptr = stage1_out_dir / "latest.pt"
+        if final_ckpt.exists():
+            ckpt = final_ckpt
+        elif latest_ptr.exists():
+            ckpt = Path(latest_ptr.read_text().strip())
+            print(f"NOT: final.pt yok — kısmi checkpoint kullanılıyor: {ckpt}")
+        else:
+            ckpt = None
+        if ckpt and ckpt.exists():
+            # eval_checkpoint.py kendi içinde control_on/control_off üretip geo_iou
+            # kapısını koşar (ckpt_control_on.json / ckpt_control_off.json yazar) —
+            # eskiden burada 5. aşamanın zero-shot preds'i tekrar değerlendiriliyordu,
+            # eğitimin gerçek çıktısı hiç ölçülmüyordu.
+            run(["python", "v2/scripts/eval_checkpoint.py", "--checkpoint", str(ckpt),
+                 "--idm-repo", str(args.idm_repo)], gate=False)
+        else:
+            print(f"UYARI: checkpoint yok ({stage1_out_dir}) — eval atlanıyor.")
         sync_drive(eval_dir)
 
     banner("PIPELINE BİTTİ")
