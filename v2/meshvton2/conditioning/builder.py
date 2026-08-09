@@ -31,11 +31,17 @@ import torch
 CANONICAL_SIZE = (1024, 768)  # (height, width) — configs/base.yaml ile aynı
 
 # Askı payı [m]: giysi üst kenarının omuz (üst giyim) / pelvis (alt giyim) referansına
-# göre dikey ofseti. +0.06 YANLIŞTI — yaka çene hizasına çıkıyor, K-NN yaka vertexlerini
-# boyun/kafaya bağlıyor, giysi kafanın etrafında balon gibi geriliyordu (çıktılardaki
-# "yaka/atkı" artifaktı ve dev kontur). -0.06 foto-inference'ta kalibre edilmişti ama
-# VARSAYILAN değişmediği için ne sentetik veri ne de eval bunu kullanıyordu (2026-08-09).
-DEFAULT_HANG_PAD = -0.06
+# göre dikey ofseti.
+#
+# +0.06 DOĞRU DEĞERDİR, DEĞİŞTİRME. Gerekçe: SMPL j[16]/j[17] omuz EKLEMİ merkezidir,
+# omzun üstü değil (~6cm altı) — tişört yaka/omuz dikişi ancak +6cm ile omza oturur.
+# 2026-07-04 sentetik drape QA'sı bu değerle geçti.
+#
+# 2026-08-09'da kısa süre -0.06 denendi ([[meshvton-v2-inference-alignment]]'teki foto
+# kalibrasyonuna dayanarak) ve QA görselinde giysi KOLTUKALTINA kaydı (tişört straplez
+# büstiyer gibi göründü) → geri alındı. Oradaki -0.06, düzeltilmemiş person_square_bbox
+# hatasını telafi eden bir yamaydı; bbox artık her yolda doğru olduğu için gereksiz.
+DEFAULT_HANG_PAD = 0.06
 
 
 def implementation() -> str:
@@ -223,9 +229,9 @@ def _prealign_garment(gverts: np.ndarray, rest: dict, garment_id: str = "", hang
     g = zup_to_yup(np.asarray(gverts, np.float64))  # metrik ölçek KORUNUR
     g[:, 0] += pelvis[0] - (g[:, 0].max() + g[:, 0].min()) / 2.0
     g[:, 2] += pelvis[2] - (g[:, 2].max() + g[:, 2].min()) / 2.0
-    # hang_pad ayarlanabilir: +0.06 bazı CLOTH3D üstlerinde ~10cm fazla yüksek
-    # çıkıyor (yaka çene hizasına asılıp K-NN'de boyun/kafaya bağlanıyor) —
-    # teşhis overlay'i ile kalibre edilir (interactive_tryon 5. hücre).
+    # Hizalama giysinin ÜST KENARINDAN (max y) yapılır — tişörtte yaka rimi, straplez
+    # üstte göğüs bandı. Tek global ofset her giysi tipi için ideal olamaz; varsayılan
+    # tişört/top ailesine göre seçilidir (bkz. DEFAULT_HANG_PAD).
     hang_y = (pelvis[1] + hang_pad) if "lower_body" in garment_id else (mid_sh[1] + hang_pad)
     g[:, 1] += hang_y - g[:, 1].max()  # rest gövde y-YUKARI: üst kenar = max(y)
     return g
