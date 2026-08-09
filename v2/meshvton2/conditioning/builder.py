@@ -30,6 +30,13 @@ import torch
 
 CANONICAL_SIZE = (1024, 768)  # (height, width) — configs/base.yaml ile aynı
 
+# Askı payı [m]: giysi üst kenarının omuz (üst giyim) / pelvis (alt giyim) referansına
+# göre dikey ofseti. +0.06 YANLIŞTI — yaka çene hizasına çıkıyor, K-NN yaka vertexlerini
+# boyun/kafaya bağlıyor, giysi kafanın etrafında balon gibi geriliyordu (çıktılardaki
+# "yaka/atkı" artifaktı ve dev kontur). -0.06 foto-inference'ta kalibre edilmişti ama
+# VARSAYILAN değişmediği için ne sentetik veri ne de eval bunu kullanıyordu (2026-08-09).
+DEFAULT_HANG_PAD = -0.06
+
 
 def implementation() -> str:
     """"real" | "stub" — her çağrıda env'den okunur (test izolasyonu için)."""
@@ -103,7 +110,7 @@ class ConditioningBundle:
     inpaint_mask: torch.Tensor      # (1,H,W) {0,1}
     control_normal: torch.Tensor    # (3,H,W) [-1,1] kamera-uzayı sahne normalleri (body+giysi)
     control_depth_sil: torch.Tensor  # (3,H,W) [-1,1]: [depth, depth, giysi silüeti]
-    appearance_ref: torch.Tensor    # (3,H,W) [-1,1] flat-lit dokulu UV render
+    appearance_ref: torch.Tensor    # (3,H,W) [-1,1] GÖLGELİ gri kumaş render'ı (texture ASLA)
     camera: CameraSpec
     meta: dict = field(default_factory=dict)  # synth modunda meta["gt_rgb"] içerir
 
@@ -138,7 +145,7 @@ def build_conditioning(
     person_prep: Any | None = None,  # PersonPrep — foto modunda ZORUNLU (agnostic+mask kaynağı)
     appearance_ref_image: np.ndarray | None = None,  # garment=None modunda ZORUNLU (ürün fotoğrafı)
     geometry_mask: bool = True,  # foto+mesh: maske = parse ∪ dilate(giysi silüeti); False = yalnız parse
-    hang_pad: float = 0.06,  # giysi üst kenarının omuz/pelvis referansına göre askı payı [m]
+    hang_pad: float = DEFAULT_HANG_PAD,  # giysi üst kenarı askı payı [m] (bkz. DEFAULT_HANG_PAD)
 ) -> ConditioningBundle:
     """Koşullama demetini üretir.
 
@@ -197,7 +204,7 @@ def _to_tensor01(img01: np.ndarray) -> torch.Tensor:
     return torch.from_numpy(np.ascontiguousarray(img01.transpose(2, 0, 1))).float() * 2.0 - 1.0
 
 
-def _prealign_garment(gverts: np.ndarray, rest: dict, garment_id: str = "", hang_pad: float = 0.06) -> np.ndarray:
+def _prealign_garment(gverts: np.ndarray, rest: dict, garment_id: str = "", hang_pad: float = DEFAULT_HANG_PAD) -> np.ndarray:
     """Bağlama öncesi hizalama: ÖLÇEK YOK, sadece eksen çevir + askı hizala.
 
     Ders zinciri (QA'da yakalandı): (1) gövde-genişliği ölçeği T-poz kulaç
@@ -224,24 +231,27 @@ def _prealign_garment(gverts: np.ndarray, rest: dict, garment_id: str = "", hang
     return g
 
 
-def _get_binding(garment: GarmentAsset, body_model, hang_pad: float = 0.06) -> "GarmentBinding":  # noqa: F821
+def _get_binding(garment: GarmentAsset, body_model, hang_pad: float = DEFAULT_HANG_PAD) -> "GarmentBinding":  # noqa: F821
     """Giysi bağlamasını cache'ten yükler ya da rest gövdeye kurar ve cache'ler.
-    NOT: cache yalnız varsayılan hang_pad için geçerlidir — farklı pad'de
-    yeniden kurulur (eski cache yanlış askı yüksekliğini dondurur)."""
+    Cache anahtarı hang_pad'i İÇERİR — farklı askı yüksekliği farklı bağlamadır
+    (eskiden cache yalnız +0.06'da açıktı; varsayılan değişince sessizce kapanırdı)."""
     from meshvton2.conditioning.lbs_drape import GarmentBinding, bind_garment
 
-    use_cache = garment.lbs_cache and hang_pad == 0.06
-    if use_cache and Path(garment.lbs_cache).exists():
-        try:
-            return GarmentBinding.load(garment.lbs_cache)
-        except Exception:  # paralel işçi yarışında yarım yazılmış cache — yeniden kur
-            pass
+    cache_path = None
+    if garment.lbs_cache:
+        p = Path(garment.lbs_cache)
+        cache_path = p.with_name(f"{p.stem}.hp{int(round(hang_pad * 1000)):+04d}{p.suffix}")
+        if cache_path.exists():
+            try:
+                return GarmentBinding.load(cache_path)
+            except Exception:  # paralel işçi yarışında yarım yazılmış cache — yeniden kur
+                pass
     rest = body_model.rest()
     aligned = _prealign_garment(garment.verts, rest, garment.garment_id, hang_pad=hang_pad)
     binding = bind_garment(aligned, rest["verts"], rest["faces"])
-    if use_cache:
-        Path(garment.lbs_cache).parent.mkdir(parents=True, exist_ok=True)
-        binding.save(garment.lbs_cache)
+    if cache_path is not None:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        binding.save(cache_path)
     return binding
 
 
@@ -250,7 +260,7 @@ ATR_GARMENT_LABELS = (4, 7)  # upper_clothes, dress — parse'tan giysi silüeti
 
 def _build_impl_real(
     person_image, smplx_params, garment, view, *, size, device,
-    person_prep=None, appearance_ref_image=None, geometry_mask=True, hang_pad=0.06,
+    person_prep=None, appearance_ref_image=None, geometry_mask=True, hang_pad=DEFAULT_HANG_PAD,
 ):
     import cv2
 
@@ -316,10 +326,13 @@ def _build_impl_real(
     # 4) Agnostic + maske
     if person_image is None:  # sentetik mod: GT render'dan türet
         skin = np.full((len(body["verts"]), 3), (0.80, 0.62, 0.52))
-        # texture'sız giysiler (allow_untextured=True) burada da crash etmesin: renk zaten
-        # eğitime hiç girmiyor (bkz. no-texture kuralı), GT sadece görsel QA için var.
-        gt_garment = garment if garment.texture is not None else force_textureless(garment)
-        gt = render_textured_scene(body["verts"], body["faces"], skin, gverts, gt_garment, cam, size=size)
+        # GT giysi HER ZAMAN gri (appearance ref ile AYNI görünüm).
+        # 2026-08-09 teşhisi: GT texture'lıyken ref gri kalıyordu → aynı girdiye
+        # bazen desenli bazen gri hedef; desen girdiden ÖNGÖRÜLEMEZ olduğu için
+        # akış-eşleme kaybının optimumu koşullu ORTALAMA = solgun/yarı saydam leke.
+        # Görev ancak hedef de gri olunca öğrenilebilir hale gelir.
+        gt = render_textured_scene(body["verts"], body["faces"], skin, gverts,
+                                   force_textureless(garment), cam, size=size)
         kernel = np.ones((wdt // 30, wdt // 30), np.uint8)
         mask_u8 = cv2.dilate((geo["garment_sil"] * 255).astype(np.uint8), kernel)
         agnostic = gt.copy()

@@ -147,7 +147,7 @@ def test_garment_none_real_data_mode():
 def test_prealign_garment_no_rescale_hang_anchor():
     """CLOTH3D metrik ölçeği KORUNUR (iki ölçekleme heuristik'i de QA'da patladı);
     üst giyim omuzdan, alt giyim belden asılır; x/z pelvise ortalanır."""
-    from meshvton2.conditioning.builder import _prealign_garment
+    from meshvton2.conditioning.builder import DEFAULT_HANG_PAD, _prealign_garment
 
     j = np.zeros((22, 3))
     j[0] = [0.1, 0, 0.05]                              # pelvis (kasıtlı ofsetli)
@@ -161,12 +161,13 @@ def test_prealign_garment_no_rescale_hang_anchor():
 
     # ölçek korunmuş: yatay genişlik hâlâ ~0.6 (Z-up→Y-up sonrası x aynı kalır)
     assert (out[:, 0].max() - out[:, 0].min()) == pytest.approx(g[:, 0].max() - g[:, 0].min(), rel=1e-9)
-    # askı: üst kenar = omuz + 0.06
-    assert out[:, 1].max() == pytest.approx(0.56, abs=1e-9)
+    # askı: üst kenar = omuz + DEFAULT_HANG_PAD (-0.06 → 0.44). Pozitif pay yakayı
+    # çene hizasına çıkarıp K-NN'de boyun/kafaya bağlıyordu (2026-08-09 teşhisi).
+    assert out[:, 1].max() == pytest.approx(0.50 + DEFAULT_HANG_PAD, abs=1e-9)
     # x/z pelvise ortalı
     assert (out[:, 0].max() + out[:, 0].min()) / 2 == pytest.approx(0.1, abs=1e-9)
     assert (out[:, 2].max() + out[:, 2].min()) / 2 == pytest.approx(0.05, abs=1e-9)
 
-    # alt giyim belden asılır (üst kenar = pelvis_y + 0.06)
+    # alt giyim belden asılır (üst kenar = pelvis_y + DEFAULT_HANG_PAD)
     low = _prealign_garment(g, rest, "lower_body__X_Trousers")
-    assert low[:, 1].max() == pytest.approx(0.06, abs=1e-9)
+    assert low[:, 1].max() == pytest.approx(0.0 + DEFAULT_HANG_PAD, abs=1e-9)

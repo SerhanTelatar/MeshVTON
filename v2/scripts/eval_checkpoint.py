@@ -29,7 +29,7 @@ from PIL import Image  # noqa: E402
 from meshvton2.conditioning.body import build_hmr2_backend  # noqa: E402
 from meshvton2.conditioning.builder import OrbitView, PhotoView, assert_real_impl, build_conditioning  # noqa: E402
 from meshvton2.conditioning.garment import load_garment_asset  # noqa: E402
-from meshvton2.conditioning.person import PersonPreprocessor  # noqa: E402
+from meshvton2.conditioning.person import PersonPreprocessor, person_square_bbox  # noqa: E402
 from meshvton2.eval import harness  # noqa: E402
 from meshvton2.eval.golden_set import load_manifest  # noqa: E402
 from meshvton2.model.flux_tryon import FluxTryOnSampler  # noqa: E402
@@ -105,7 +105,10 @@ def main() -> int:
         person, garment = by_pid[combo.person_id], by_gid[combo.garment_id]
         try:
             pp = prep.process(manifest.root / person.image, size=size)
-            params = hmr2(pp.image)
+            # person_square_bbox ŞART: varsayılan tam-kare bbox gövdeyi görüntü
+            # merkezine projekte eder (off-center kişide mesh kayar) — hizalama
+            # düzeltmesi eval'de kullanılmıyordu (2026-08-09).
+            params = hmr2(pp.image, bbox=person_square_bbox(pp))
             asset = load_garment_asset(
                 garments_root / garment.mesh,
                 texture_path=garments_root / garment.texture if garment.texture else None,

@@ -199,8 +199,13 @@ def main() -> int:
         count = lambda: sum(1 for _ in synth_dir.glob("s*_*/")) if synth_dir.exists() else 0
 
         def _version_ok() -> bool:
+            # Sürüm KAYNAKTAN okunur — elle yazılmış "3" sabiti generate.py ile
+            # sessizce ayrışıp eski veriyi geçerli sayabilirdi (2026-08-09).
+            sys.path.insert(0, str(REPO / "v2"))
+            from meshvton2.synth.generate import DATA_VERSION
+
             vf = synth_dir / "DATA_VERSION"
-            return vf.exists() and vf.read_text().strip() == "3"
+            return vf.exists() and vf.read_text().strip() == DATA_VERSION
 
         existing = count()
         if existing < args.num:

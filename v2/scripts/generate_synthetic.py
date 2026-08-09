@@ -27,18 +27,21 @@ from meshvton2.synth.generate import generate  # noqa: E402
 
 
 def discover_assets(garments_root: Path, cache_dir: Path, limit: int | None):
-    """Giysi klasörlerini özyinelemeli bulur; upper_body öncelikli.
+    """Giysi klasörlerini özyinelemeli bulur; YALNIZCA upper_body klasörü altındakiler.
 
     KALICI KURAL: appearance ref builder'da HER ZAMAN düz griye çevrilir
     (texture var/yok fark etmez) — bu yüzden burada texture'lı/texture'sız
-    ayrımı yapılmaz; geçerli her mesh kullanılabilir.
+    ayrımı yapılmaz; geçerli her mesh kullanılabilir. Ama giysi TİPİ önemli:
+    drape/hang mantığı üst-vücut için ayarlı (v1 t-shirt/top varsayımı) —
+    upper_body dışı klasörler (ör. CLOTH3D val_t1 ham split'i, Trousers/Skirt/
+    Dress/Jumpsuit içerebilir, tip kontrolü yok) tamamen dışlanır.
     """
     from dataclasses import replace
 
-    dirs = sorted({p.parent for p in garments_root.rglob("*.obj")})
-    dirs = [d for d in dirs if "upper_body" in d.relative_to(garments_root).parts] + [
-        d for d in dirs if "upper_body" not in d.relative_to(garments_root).parts
-    ]
+    dirs = sorted(
+        d for d in {p.parent for p in garments_root.rglob("*.obj")}
+        if "upper_body" in d.relative_to(garments_root).parts
+    )
     assets, skipped = [], []
     for d in dirs:
         try:

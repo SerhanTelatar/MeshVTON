@@ -43,16 +43,18 @@ def find_texture(garment_dir: Path) -> Path | None:
 
 def pick_garments(garments_root: Path, ids: list[str] | None) -> list[GoldenGarment]:
     """Giysi klasörlerini ÖZYİNELEMELİ bulur (CLOTH3D düzeni: kategori/giysi/model.obj).
-    Otomatik seçimde upper_body öncelikli (plan: tops-first); texture şart DEĞİL
-    (appearance ref builder'da her durumda griye çevrilir)."""
+    Otomatik seçim YALNIZCA upper_body klasörü altından yapılır (drape mantığı
+    üst-vücut için ayarlı; diğer split'lerde tip kontrolsüz Trousers/Skirt/Dress
+    olabilir); texture şart DEĞİL (appearance ref builder'da her durumda griye
+    çevrilir)."""
     out = []
     if ids:
         dirs = [garments_root / gid for gid in ids]
     else:
-        all_dirs = sorted({p.parent for p in garments_root.rglob("*.obj")})
-        dirs = [d for d in all_dirs if "upper_body" in d.relative_to(garments_root).parts] + [
-            d for d in all_dirs if "upper_body" not in d.relative_to(garments_root).parts
-        ]
+        dirs = sorted(
+            d for d in {p.parent for p in garments_root.rglob("*.obj")}
+            if "upper_body" in d.relative_to(garments_root).parts
+        )
     for d in dirs:
         objs = sorted(d.glob("*.obj"))
         if not objs:
