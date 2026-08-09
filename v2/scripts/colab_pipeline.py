@@ -204,16 +204,22 @@ def main() -> int:
                   "Taze duman istiyorsanız v2/data/synth silinmeli.")
         if not n_existing:
             run(["python", "v2/scripts/generate_synthetic.py", "--garments", str(args.garments),
-                 "--poses", str(args.poses), "--num", "5", "--limit-garments", "3"], gate=True)
+                 # 8 FARKLI giysi: QA tek mesh'e bakarak yargılanamaz — bozuk bir
+                 # CLOTH3D mesh'i (panelleri ayrışan, delikli) hattın tamamı sanılıyordu
+                 # (2026-08-09: QA hep 00047_Top'u gösteriyordu).
+                 "--poses", str(args.poses), "--num", "8", "--limit-garments", "8"], gate=True)
         if not any(synth_dir.glob("s*_*/")):
             raise SystemExit("KAPI: duman testinde hiç örnek yazılamadı — drape hattını inceleyin")
         qa = REPO / "v2/eval_results/synth_qa"
+        shutil.rmtree(qa, ignore_errors=True)  # eski turun görselleri karışmasın
         qa.mkdir(parents=True, exist_ok=True)
-        first = sorted(synth_dir.glob("s*_*/"))
-        if first:
-            shutil.copytree(first[0], qa / first[0].name, dirs_exist_ok=True)
+        samples = sorted(synth_dir.glob("s*_*/"))[:6]  # tek örnek istatistik değildir
+        for sd in samples:
+            shutil.copytree(sd, qa / sd.name, dirs_exist_ok=True)
         sync_drive(qa)
-        print("QA görselleri Drive'da: v2_outputs/synth_qa — view_180/gt.png'yi GÖZLE kontrol edin.")
+        print(f"QA: {len(samples)} FARKLI giysi örneği Drive'da (v2_outputs/synth_qa).")
+        print("GÖZLE bak: giysi omuza oturmuş mu, gövde kumaştan fırlıyor mu, "
+              "0° ve 180° tutarlı mı. Tek bozuk mesh normaldir — ÇOĞUNLUĞA bak.")
 
     # ---- 4. full synth ----
     if active("synth"):
