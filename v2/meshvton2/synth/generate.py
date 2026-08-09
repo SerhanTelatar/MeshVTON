@@ -23,7 +23,7 @@ from pathlib import Path
 import numpy as np
 
 from meshvton2.conditioning.builder import ConditioningBundle, GarmentAsset, OrbitView, build_conditioning
-from meshvton2.synth.bodies import load_pose_bank, sample_identity
+from meshvton2.synth.bodies import load_identity_bank, sample_identity
 
 VIEWS = (0, 90, 180, 270)
 # Veri sözleşmesi/drape hattı değişince ARTIR — pipeline eski sürüm arşivini tanıyıp siler
@@ -35,7 +35,9 @@ VIEWS = (0, 90, 180, 270)
 #      formu modele hiç geçmiyordu)
 #   3. hang_pad: kısa süre -0.06 denendi, QA'da giysi koltukaltına kaydı → +0.06'ya
 #      geri alındı (v5). Bkz. builder.DEFAULT_HANG_PAD gerekçesi.
-DATA_VERSION = "5"
+# v6: kimlik bankası — beden(betas) artık pozla EŞLEŞMİŞ biçimde gerçek kişilerden;
+#     rastgele uç bedenler giysiyi yırtıyordu. + clearance 4mm→8mm.
+DATA_VERSION = "6"
 DEPTH_REJECT = 0.03   # ortalama penetrasyon derinliği [m]: mm=normal temas, 3cm+=yanlış yerleşim
 EXTENT_REJECT = 1.5   # giysi/gövde bbox-diyagonal oranı üst sınırı (patlama kapısı)
 # NOT: "itilen vertex oranı" (clearance_ratio) artık RED kriteri DEĞİL — oturan
@@ -99,7 +101,14 @@ def generate(
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "DATA_VERSION").write_text(DATA_VERSION)
     rng = np.random.RandomState(seed)
-    pose_bank = load_pose_bank(poses_file)
+    bank = load_identity_bank(poses_file)
+    # Teşhis: gerçek kimlik bankası mı yoksa fallback mi kullanılıyor, GÖRÜNSÜN
+    # (poz/beden dağılımı sessizce sentetiğe düşerse çıktılar hedef alandan kayar).
+    if bank is None:
+        log("KİMLİK: fallback A-poz + rastgele beden (--poses verilmedi)")
+    else:
+        log(f"KİMLİK: {len(bank['body_pose'])} gerçek kişi; "
+            f"beden(betas) {'GERÇEK (eşleşmiş)' if bank['betas'] is not None else 'rastgele (npz betas yok)'}")
     pairs_path = out_dir / "pairs.csv"
     new_header = not pairs_path.exists()
 
@@ -111,7 +120,7 @@ def generate(
         for i in range(num_samples):
             # seed ofseti: paralel işçiler aynı giysi sırasını üretmesin
             asset = garment_assets[(i + seed) % len(garment_assets)]
-            params = sample_identity(rng, size, pose_bank)
+            params = sample_identity(rng, size, bank)
             sample_id = f"s{seed:03d}_{i:06d}"
             try:
                 bundles = {
