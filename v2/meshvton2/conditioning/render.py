@@ -1,6 +1,8 @@
 """Render yardımcıları (pyrender öncelikli — Colab'da derleme YOK).
 
-- Faz 1: görünüm referansı (flat-lit dokulu UV render — ürün fotoğrafı gibi).
+- Faz 1: görünüm referansı (`render_appearance_ref`): GÖLGELİ gri kumaş render'ı.
+  FLAT (gölgesiz) idi; düz gri texture + FLAT = formsuz siluet lekesi, modele bilgi
+  geçmiyordu (2026-08-09 teşhisi) — artık `add_studio_lights` + mat PBR materyali.
 - Faz 2: ekran-uzayı geometri pass'leri (`render_geometry`): kamera-uzayı normal +
   depth + giysi silüeti, CameraSpec'in K/R/T'siyle birebir (IntrinsicsCamera).
   Normal pass'i "normalleri vertex-rengi yap + FLAT render" hilesiyle pyrender'da
@@ -48,6 +50,43 @@ def force_textureless(asset: GarmentAsset) -> GarmentAsset:
     )
 
 
+def _dir_light_pose(yaw_deg: float, pitch_deg: float) -> np.ndarray:
+    """pyrender DirectionalLight kendi -z ekseni boyunca aydınlatır; yaw/pitch ile yönlendir."""
+    y, p = np.deg2rad(yaw_deg), np.deg2rad(pitch_deg)
+    ry = np.array([[np.cos(y), 0, np.sin(y)], [0, 1, 0], [-np.sin(y), 0, np.cos(y)]])
+    rx = np.array([[1, 0, 0], [0, np.cos(p), -np.sin(p)], [0, np.sin(p), np.cos(p)]])
+    pose = np.eye(4)
+    pose[:3, :3] = ry @ rx
+    return pose
+
+
+def _matte(mesh):
+    """pyrender'ın varsayılan PBR materyali metallicFactor=1.0'dır — yönlü ışık
+    altında difüz bileşen sıfırlanıp kumaş METALİK/kapkara görünür. Kumaş ve ten
+    için mat yüzey zorunlu (ışıklandırmaya geçerken fark edildi, 2026-08-09)."""
+    for prim in mesh.primitives:
+        mat = prim.material
+        if hasattr(mat, "metallicFactor"):
+            mat.metallicFactor = 0.0
+            mat.roughnessFactor = 0.9
+    return mesh
+
+
+def add_studio_lights(pyrender, scene, cam_pose: np.ndarray) -> None:
+    """Kameraya bağlı 3-nokta ışık — GÖLGE üretir, yani gri kumaşın FORMU görünür.
+
+    NEDEN (2026-08-09 teşhisi): appearance ref ve sentetik GT `RenderFlags.FLAT` ile
+    (ışıklama yok) render ediliyordu; düz gri texture + FLAT = tamamen düz bir siluet
+    lekesi. Giysinin kıvrımı/kol derinliği/omuz yuvarlaklığı modele HİÇ geçmiyordu
+    (siluet zaten control_depth_sil'de var) → model giysiyi uyduruyor, çıktı hayalet
+    gibi yarı saydam çıkıyordu. Işıklar KAMERAYA bağlı: 0/90/180/270 görüşlerinde
+    aynı yüzey aynı şekilde gölgelenir (multi-view tutarlılığı).
+    """
+    for yaw, pitch, intensity in ((30.0, -20.0, 3.0), (-45.0, 10.0, 1.4), (160.0, -30.0, 0.9)):
+        light = pyrender.DirectionalLight(color=np.ones(3), intensity=intensity)
+        scene.add(light, pose=cam_pose @ _dir_light_pose(yaw, pitch))
+
+
 def render_appearance_ref(
     asset: GarmentAsset,
     *,
@@ -58,7 +97,7 @@ def render_appearance_ref(
     device: str | None = None,
     backend: str = "auto",
 ) -> np.ndarray:
-    """Giysinin flat-lit (gölgesiz, ürün-foto benzeri) dokulu ön render'ı.
+    """Giysinin GÖLGELİ (formu görünür) gri kumaş ön render'ı.
 
     backend: "auto" (pytorch3d varsa o, yoksa pyrender) | "pytorch3d" | "pyrender".
     pyrender saniyeler içinde pip'lenir (Colab'da derleme YOK) — Faz 1 bunu kullanır;
@@ -72,13 +111,10 @@ def render_appearance_ref(
             f"{asset.garment_id}: appearance ref için texture+UV şart "
             "(load_garment_asset bunu garanti eder)."
         )
+    # pyrender SABİT: pytorch3d yolu hâlâ ambient-only (gölgesiz) — iki backend farklı
+    # görüntü üretirse eğitim/çıkarım tutarsız olur. Colab'da zaten pyrender kurulu.
     if backend == "auto":
-        try:
-            import pytorch3d  # noqa: F401
-
-            backend = "pytorch3d"
-        except ImportError:
-            backend = "pyrender"
+        backend = "pyrender"
     if backend == "pyrender":
         return _render_pyrender(asset, size=size, azim=azim, dist=dist, convert_zup=convert_zup)
     return _render_pytorch3d(asset, size=size, azim=azim, dist=dist, convert_zup=convert_zup, device=device)
@@ -110,16 +146,16 @@ def _render_pyrender(asset, *, size, azim, dist, convert_zup) -> np.ndarray:
     verts = _prep_verts(asset, convert_zup, azim)
     tm = trimesh.Trimesh(vertices=verts, faces=asset.faces, process=False)
     tm.visual = trimesh.visual.TextureVisuals(uv=asset.uv, image=Image.fromarray(asset.texture))
-    scene = pyrender.Scene(ambient_light=np.ones(3), bg_color=(1.0, 1.0, 1.0, 1.0))
-    scene.add(pyrender.Mesh.from_trimesh(tm, smooth=False))
+    scene = pyrender.Scene(ambient_light=np.full(3, 0.45), bg_color=(1.0, 1.0, 1.0, 1.0))
+    scene.add(_matte(pyrender.Mesh.from_trimesh(tm, smooth=True)))  # smooth: kıvrım sert facet olmasın
     cam = pyrender.PerspectiveCamera(yfov=np.deg2rad(60.0), aspectRatio=w / h)
     pose = np.eye(4)
     pose[2, 3] = dist
     scene.add(cam, pose=pose)
+    add_studio_lights(pyrender, scene, pose)  # FLAT DEĞİL: gölge = giysinin formu
     renderer = pyrender.OffscreenRenderer(w, h)
     try:
-        # FLAT: ışıklama yok, texture olduğu gibi — ürün fotoğrafı görünümü
-        color, _ = renderer.render(scene, flags=pyrender.RenderFlags.FLAT)
+        color, _ = renderer.render(scene)
     finally:
         renderer.delete()
     return np.asarray(color[..., :3], dtype=np.uint8)
@@ -218,14 +254,16 @@ def _flat_scene(pyrender, bg=(0.0, 0.0, 0.0)):
     return pyrender.Scene(ambient_light=np.ones(3), bg_color=(*bg, 0.0))
 
 
-def _add_colored(pyrender, scene, verts, faces, colors01):
+def _add_colored(pyrender, scene, verts, faces, colors01, *, smooth: bool = False):
+    """smooth=False (varsayılan): geometri pass'leri — vertex rengi VERİ taşır (normal/id),
+    interpolasyon bozmasın. smooth=True yalnız görsel (GT) render'da."""
     import trimesh
 
     tm = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
     tm.visual = trimesh.visual.ColorVisuals(
         tm, vertex_colors=(np.clip(colors01, 0, 1) * 255).astype(np.uint8)
     )
-    scene.add(pyrender.Mesh.from_trimesh(tm, smooth=False))
+    scene.add(_matte(pyrender.Mesh.from_trimesh(tm, smooth=smooth)))
 
 
 def render_geometry(
@@ -318,17 +356,21 @@ def render_textured_scene(
     from PIL import Image
 
     h, w = size
-    scene = pyrender.Scene(ambient_light=np.ones(3), bg_color=(*bg, 1.0))
-    _add_colored(pyrender, scene, body_verts, body_faces, body_colors01)
+    scene = pyrender.Scene(ambient_light=np.full(3, 0.45), bg_color=(*bg, 1.0))
+    _add_colored(pyrender, scene, body_verts, body_faces, body_colors01, smooth=True)
     tm = trimesh.Trimesh(vertices=garment_verts, faces=garment_asset.faces, process=False)
     tm.visual = trimesh.visual.TextureVisuals(
         uv=garment_asset.uv, image=Image.fromarray(garment_asset.texture)
     )
-    scene.add(pyrender.Mesh.from_trimesh(tm, smooth=False))
-    scene.add(_intrinsics_camera(camera, pyrender), pose=_cv_pose_to_gl(camera))
+    scene.add(_matte(pyrender.Mesh.from_trimesh(tm, smooth=True)))
+    cam_pose = _cv_pose_to_gl(camera)
+    scene.add(_intrinsics_camera(camera, pyrender), pose=cam_pose)
+    # FLAT DEĞİL: eğitim HEDEFİ gölgesiz düz renk olursa model de gölgesiz düz
+    # (=yarı saydam görünen) giysi üretmeyi öğrenir — 2026-08-09 teşhisi.
+    add_studio_lights(pyrender, scene, cam_pose)
     r = pyrender.OffscreenRenderer(w, h)
     try:
-        color, _ = r.render(scene, flags=pyrender.RenderFlags.FLAT)
+        color, _ = r.render(scene)
     finally:
         r.delete()
     return np.asarray(color[..., :3], dtype=np.uint8)

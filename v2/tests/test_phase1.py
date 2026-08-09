@@ -90,21 +90,22 @@ def test_pick_garments_nested_categories(tmp_path):
     (tmp_path / "upper_body/g1").mkdir(parents=True)
     (tmp_path / "upper_body/g1/model.obj").write_text("v 0 0 0\n")
     (tmp_path / "upper_body/g1/tex.png").write_bytes(b"x")
-    (tmp_path / "dresses/g2").mkdir(parents=True)
-    (tmp_path / "dresses/g2/model.obj").write_text("v 0 0 0\n")  # texturesiz — yine de dahil edilmeli
+    (tmp_path / "upper_body/g2").mkdir(parents=True)
+    (tmp_path / "upper_body/g2/model.obj").write_text("v 0 0 0\n")  # texturesiz — yine de dahil
     (tmp_path / "dresses/g3").mkdir(parents=True)
     (tmp_path / "dresses/g3/model.obj").write_text("v 0 0 0\n")
     (tmp_path / "dresses/g3/g3.png").write_bytes(b"x")
 
     picked = mod.pick_garments(tmp_path, None)
     ids = [g.id for g in picked]
-    assert "upper_body__g1" in ids and "dresses__g3" in ids
-    assert "dresses__g2" in ids                          # texture şart değil (KALICI kural)
-    assert ids[0] == "upper_body__g1"                    # upper_body öncelikli
+    # YALNIZ upper_body: drape/askı mantığı üst-vücut için ayarlı, diğer split'lerde
+    # tip kontrolü yok (Trousers/Skirt/Dress karışır) — 2026-08-09 kısıtı.
+    assert ids == ["upper_body__g1", "upper_body__g2"]
+    assert "dresses__g3" not in ids
     g1 = picked[ids.index("upper_body__g1")]
     assert g1.mesh == "upper_body/g1/model.obj" and g1.category == "upper_body"
-    g2 = picked[ids.index("dresses__g2")]
-    assert g2.texture is None
+    g2 = picked[ids.index("upper_body__g2")]
+    assert g2.texture is None                            # texture şart değil (KALICI kural)
 
 
 def test_garment_ref_from_person(tmp_path):

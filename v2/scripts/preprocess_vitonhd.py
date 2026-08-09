@@ -30,7 +30,7 @@ from PIL import Image  # noqa: E402
 
 from meshvton2.conditioning.body import build_hmr2_backend  # noqa: E402
 from meshvton2.conditioning.builder import PhotoView, assert_real_impl, build_conditioning  # noqa: E402
-from meshvton2.conditioning.person import PersonPreprocessor  # noqa: E402
+from meshvton2.conditioning.person import PersonPreprocessor, person_square_bbox  # noqa: E402
 from meshvton2.utils.image_utils import tensor_to_pil  # noqa: E402
 
 
@@ -97,7 +97,7 @@ def main() -> int:
                 cloth_path = None
         try:
             pp = prep.process(img_path, size=size)
-            params = hmr2(pp.image)
+            params = hmr2(pp.image, bbox=person_square_bbox(pp))  # kişi-merkezli kare (hizalama)
             if cloth_path is not None:
                 ref = np.asarray(Image.open(cloth_path).convert("RGB"))
             else:
