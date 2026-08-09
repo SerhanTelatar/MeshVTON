@@ -33,8 +33,9 @@ VIEWS = (0, 90, 180, 270)
 #      hedef öngörülemez oluyordu → model koşullu ortalamayı, yani solgun lekeyi öğrendi)
 #   2. appearance ref + GT artık GÖLGELİ render (FLAT = gölgesiz düz siluetti; giysinin
 #      formu modele hiç geçmiyordu)
-#   3. hang_pad varsayılanı +0.06 → -0.06 (yaka çenede/kafaya bağlı drape düzeldi)
-DATA_VERSION = "4"
+#   3. hang_pad: kısa süre -0.06 denendi, QA'da giysi koltukaltına kaydı → +0.06'ya
+#      geri alındı (v5). Bkz. builder.DEFAULT_HANG_PAD gerekçesi.
+DATA_VERSION = "5"
 DEPTH_REJECT = 0.03   # ortalama penetrasyon derinliği [m]: mm=normal temas, 3cm+=yanlış yerleşim
 EXTENT_REJECT = 1.5   # giysi/gövde bbox-diyagonal oranı üst sınırı (patlama kapısı)
 # NOT: "itilen vertex oranı" (clearance_ratio) artık RED kriteri DEĞİL — oturan
