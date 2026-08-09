@@ -175,7 +175,7 @@ def push_clearance(
     body_verts: np.ndarray,
     body_faces: np.ndarray,
     *,
-    clearance: float = 0.004,
+    clearance: float = 0.008,
 ) -> tuple[np.ndarray, float, float]:
     """Gövde içine giren giysi vertex'lerini en yakın gövde normali boyunca
     clearance mesafesine iter.
@@ -183,7 +183,10 @@ def push_clearance(
     Döner: (düzeltilmiş verts, itilen oran, ortalama penetrasyon derinliği [m]).
     NOT: oturan giyside bir miktar itme NORMALDİR (kumaş tene değer) — bozukluk
     sinyali itilen SAYI değil, ne kadar DERİNDEN itildiğidir (mm=normal, cm=
-    giysi gövdenin içinden geçiyor demek)."""
+    giysi gövdenin içinden geçiyor demek).
+    clearance 4mm→8mm (2026-08-09): itme yalnız VERTEX bazlıdır, tüm vertexler
+    dışarıda olsa bile gövde büyük üçgenlerin İÇİNDEN sızabiliyor (QA'da omuz/
+    göğüste ten rengi delikler). Kumaş zaten tenden birkaç mm açıktır."""
     g = np.asarray(garment_verts, np.float64).copy()
     b = np.asarray(body_verts, np.float64)
     n_body = vertex_normals(b, body_faces)

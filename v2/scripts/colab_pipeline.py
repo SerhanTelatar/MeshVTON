@@ -127,6 +127,27 @@ def main() -> int:
     def active(stage: str) -> bool:
         return STAGES.index(stage) <= until and stage not in args.skip
 
+    def purge_stale_synth(where: str) -> None:
+        """Sürümü eskiyen sentetik veriyi (yerel + Drive arşivi) siler.
+
+        DUMAN AŞAMASINDAN ÖNCE de çağrılır: kontrol eskiden yalnız 4/7'deydi, ama
+        3/7 "diskte örnek var" deyip üretimi atlıyordu → --until smoke ile koşan
+        kullanıcı QA'da BAYAT görsel görüyordu (düzeltmelerin etkisi görünmüyordu,
+        2026-08-09). Sürüm kaynaktan okunur, elle yazılmaz.
+        """
+        sys.path.insert(0, str(REPO / "v2"))
+        from meshvton2.synth.generate import DATA_VERSION
+
+        if not synth_dir.exists() or not any(synth_dir.glob("s*_*/")):
+            return
+        vf = synth_dir / "DATA_VERSION"
+        if vf.exists() and vf.read_text().strip() == DATA_VERSION:
+            return
+        print(f"UYARI [{where}]: sentetik veri ESKİ SÜRÜM (beklenen v{DATA_VERSION}) — "
+              "siliniyor ve sıfırdan üretilecek.")
+        shutil.rmtree(synth_dir, ignore_errors=True)
+        (DRIVE_OUT / "synth_data.zip").unlink(missing_ok=True)
+
     # ---- 1. check ----
     banner("1/7 ortam kontrolü")
     try:
@@ -175,6 +196,7 @@ def main() -> int:
     # ---- 3. smoke + QA ----
     if active("smoke"):
         banner("3/7 sentetik duman testi + QA sheet")
+        purge_stale_synth("3/7")  # QA görseli TAZE kodla üretilsin (bayat QA tuzağı)
         # pairs.csv değil ÖRNEK sayısına bak: başarısız koşu header'lı boş csv bırakabilir
         n_existing = sum(1 for _ in synth_dir.glob("s*_*/")) if synth_dir.exists() else 0
         if n_existing:
@@ -198,25 +220,10 @@ def main() -> int:
         banner(f"4/7 tam sentetik üretim (hedef {args.num} YAZILMIŞ örnek × 4 görüş)")
         count = lambda: sum(1 for _ in synth_dir.glob("s*_*/")) if synth_dir.exists() else 0
 
-        def _version_ok() -> bool:
-            # Sürüm KAYNAKTAN okunur — elle yazılmış "3" sabiti generate.py ile
-            # sessizce ayrışıp eski veriyi geçerli sayabilirdi (2026-08-09).
-            sys.path.insert(0, str(REPO / "v2"))
-            from meshvton2.synth.generate import DATA_VERSION
-
-            vf = synth_dir / "DATA_VERSION"
-            return vf.exists() and vf.read_text().strip() == DATA_VERSION
-
-        existing = count()
-        if existing < args.num:
+        if count() < args.num:
             restore_from_drive("synth_data.zip", synth_dir.parent)
-            existing = count()
-        if existing and not _version_ok():
-            print("UYARI: mevcut/arşiv sentetik veri ESKİ SÜRÜM (bozuk drape dönemi) — "
-                  "siliniyor ve sıfırdan üretilecek.")
-            shutil.rmtree(synth_dir, ignore_errors=True)
-            (DRIVE_OUT / "synth_data.zip").unlink(missing_ok=True)
-            existing = 0
+        purge_stale_synth("4/7")  # Drive arşivinden GELEN eski sürümü de yakalar
+        existing = count()
         # PARÇALI + PARALEL üretim: her parça sonrası Drive arşivi (kopma en fazla
         # bir parça götürür); çok çekirdekli makinede (A100 VM ~12 vCPU) işçiler
         # paralel — üretim CPU-bound, GPU değil.
