@@ -316,7 +316,10 @@ def _build_impl_real(
     # 4) Agnostic + maske
     if person_image is None:  # sentetik mod: GT render'dan türet
         skin = np.full((len(body["verts"]), 3), (0.80, 0.62, 0.52))
-        gt = render_textured_scene(body["verts"], body["faces"], skin, gverts, garment, cam, size=size)
+        # texture'sız giysiler (allow_untextured=True) burada da crash etmesin: renk zaten
+        # eğitime hiç girmiyor (bkz. no-texture kuralı), GT sadece görsel QA için var.
+        gt_garment = garment if garment.texture is not None else force_textureless(garment)
+        gt = render_textured_scene(body["verts"], body["faces"], skin, gverts, gt_garment, cam, size=size)
         kernel = np.ones((wdt // 30, wdt // 30), np.uint8)
         mask_u8 = cv2.dilate((geo["garment_sil"] * 255).astype(np.uint8), kernel)
         agnostic = gt.copy()
