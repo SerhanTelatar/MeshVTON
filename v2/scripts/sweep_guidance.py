@@ -50,6 +50,10 @@ def main() -> int:
     ap.add_argument("--guidance", type=float, nargs="+", default=[1.0, 3.5, 7.0, 15.0])
     ap.add_argument("--steps", type=int, default=28)
     ap.add_argument("--seed", type=int, default=0)
+    # HAM çıktı = kompozit ÖNCESİ VAE sonucu. Solgunluk/saydamlık modelin
+    # üretiminden mi, maske dışı geri-yapıştırmanın kenar yumuşatmasından mı
+    # geliyor? (flux_tryon.sample docstring'indeki teşhis kolu.)
+    ap.add_argument("--raw", action="store_true", help="kompozit öncesi ham çıktıyı da kaydet")
     ap.add_argument("--hang-pad", type=float, default=PHOTO_HANG_PAD)
     ap.add_argument("--garment-scale", type=float, default=PHOTO_GARMENT_SCALE)
     args = ap.parse_args()
@@ -90,15 +94,22 @@ def main() -> int:
 
     outs = []
     for g in args.guidance:
-        img = sampler.sample(bundle, steps=args.steps, seed=args.seed,
-                             control_scale=1.0, guidance=float(g))
+        res = sampler.sample(bundle, steps=args.steps, seed=args.seed,
+                             control_scale=1.0, guidance=float(g), return_raw=args.raw)
+        img, raw = res if args.raw else (res, None)
+        if raw is not None:
+            Image.fromarray(raw).save(out_dir / f"{pid}__{gid}__g{g:g}.RAW.png")
         fn = out_dir / f"{pid}__{gid}__g{g:g}.png"
         Image.fromarray(img).save(fn)
         # Kontrast/doygunluk vekili: maske içi std yükseliyorsa doku BELİRİYOR demektir
         m = bundle.inpaint_mask.numpy()[0] > 0.5
         std = float(np.asarray(img, np.float32)[m].std())
         outs.append((g, img, std))
-        print(f"  guidance={g:>5.1f} → {fn.name}   maske-içi std={std:6.2f}")
+        extra = ""
+        if raw is not None:
+            rstd = float(np.asarray(raw, np.float32)[m].std())
+            extra = f"   HAM std={rstd:6.2f}"
+        print(f"  guidance={g:>5.1f} → {fn.name}   maske-içi std={std:6.2f}{extra}")
 
     h = round(240 * size[0] / size[1])
     strip = Image.new("RGB", (240 * len(outs), h), "white")
