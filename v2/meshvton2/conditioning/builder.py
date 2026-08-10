@@ -43,6 +43,20 @@ CANONICAL_SIZE = (1024, 768)  # (height, width) — configs/base.yaml ile aynı
 # hatasını telafi eden bir yamaydı; bbox artık her yolda doğru olduğu için gereksiz.
 DEFAULT_HANG_PAD = 0.06
 
+# FOTOĞRAF yolu için AYRI değer. 2026-08-10 ampirik kalibrasyonu
+# (v2/scripts/calibrate_hang.py, kamera kapısından geçmiş 5 kişi): +0.06 giysiyi
+# gerçek giysiye göre ~21 puan YUKARI asıyor (yüzün üstüne biniyor);
+# mesh<->parser IoU +0.06'da 0.295, -0.12'de 0.480. Uçtan uca doğrulandı:
+# yerleşim IoU (placement_iou.py) 0.5815 -> 0.6829, mesh ayırt ediciliği değişmedi
+# (+0.0236 -> +0.0219, aynı 10 kombo). geo_iou DÜŞTÜ ama o metrik kendi verdiğimiz
+# silüeti hedef aldığı için hedefin bozukluğunu göremiyor — bkz. placement_iou.py.
+#
+# SENTETİK yol +0.06'da KALIR: orada gövde de giysi de aynı SMPL-X'ten geliyor ve
+# 2026-07-04 drape QA'sı o değerle geçti; -0.06 denendiğinde giysi koltukaltına
+# kaymıştı. İki yolun farklı değer istemesi HMR2 (foto) ile SMPL-X (sentetik)
+# gövdelerinin farklı olmasından; tek global değer ikisine birden uymuyor.
+PHOTO_HANG_PAD = -0.12
+
 
 def implementation() -> str:
     """"real" | "stub" — her çağrıda env'den okunur (test izolasyonu için)."""

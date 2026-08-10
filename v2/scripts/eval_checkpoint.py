@@ -27,7 +27,8 @@ import yaml  # noqa: E402
 from PIL import Image  # noqa: E402
 
 from meshvton2.conditioning.body import build_hmr2_backend  # noqa: E402
-from meshvton2.conditioning.builder import OrbitView, PhotoView, assert_real_impl, build_conditioning  # noqa: E402
+from meshvton2.conditioning.builder import (  # noqa: E402
+    PHOTO_HANG_PAD, OrbitView, PhotoView, assert_real_impl, build_conditioning)
 from meshvton2.conditioning.garment import load_garment_asset  # noqa: E402
 from meshvton2.conditioning.person import PersonPreprocessor, person_square_bbox  # noqa: E402
 from meshvton2.eval import harness  # noqa: E402
@@ -85,12 +86,12 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=10, help="ilk N kombo")
     ap.add_argument("--angles", type=int, nargs="+", default=[0])
     ap.add_argument("--steps", type=int, default=28)
-    # Askı payı: 2026-08-10 kalibrasyonu (calibrate_hang.py) FOTOĞRAF yolunda
-    # +0.06'nın giysiyi ~21 puan yukarı astığını ölçtü (mesh↔parser IoU 0.295);
-    # -0.12'de 0.480. Varsayılan hâlâ builder'ınki — değeri BURADAN vererek
-    # düzeltmenin uçtan uca geo_iou'yu yükseltip yükseltmediği ölçülür.
-    ap.add_argument("--hang-pad", type=float, default=None,
-                    help="giysi askı payı [m]; verilmezse builder varsayılanı (+0.06)")
+    # Askı payı: FOTOĞRAF yolunun kalibre edilmiş değeri (builder.PHOTO_HANG_PAD).
+    # builder'ın +0.06'sı SENTETİK yol içindir; fotoğrafta giysiyi ~21 puan yukarı
+    # asıyordu (mesh↔parser IoU 0.295 → -0.12'de 0.480, yerleşim IoU 0.58 → 0.68).
+    # Eski davranışı yeniden ölçmek için: --hang-pad 0.06
+    ap.add_argument("--hang-pad", type=float, default=PHOTO_HANG_PAD,
+                    help=f"giysi askı payı [m]; varsayılan {PHOTO_HANG_PAD} (foto yolu kalibrasyonu)")
     ap.add_argument("--tag-suffix", default="",
                     help="çıktı klasör/rapor adına ek (ör. _hp-012) — koşuları ezmemek için")
     args = ap.parse_args()
