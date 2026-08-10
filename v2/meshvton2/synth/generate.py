@@ -37,7 +37,23 @@ VIEWS = (0, 90, 180, 270)
 #      geri alındı (v5). Bkz. builder.DEFAULT_HANG_PAD gerekçesi.
 # v6: kimlik bankası — beden(betas) artık pozla EŞLEŞMİŞ biçimde gerçek kişilerden;
 #     rastgele uç bedenler giysiyi yırtıyordu. + clearance 4mm→8mm.
-DATA_VERSION = "6"
+DATA_VERSION = "7"  # 7: ornek basina rastgele ten rengi (bkz. sample_skin)
+
+
+# Gerçekçi ten rengi aralığı (Fitzpatrick benzeri, açıktan koyuya sürekli bir eksen).
+# TEK sabit ton yerine örnek başına rastgele: model ten çeşitliliğini görsün ve
+# agnostic dolgusundaki ipucunu KULLANMAYI öğrensin (2026-08-10, bkz. builder.py).
+SKIN_LIGHT = np.array([245, 213, 190], np.float64)
+SKIN_DARK = np.array([88, 56, 40], np.float64)
+
+
+def sample_skin(rng) -> tuple[int, int, int]:
+    """Açık-koyu ekseni üzerinde rastgele ton + hafif renk sapması (kızıl/sarı)."""
+    t = rng.beta(1.6, 1.6)  # uçlardan çok ortayı örnekle, ama uçlar da gelsin
+    base = SKIN_LIGHT * (1.0 - t) + SKIN_DARK * t
+    base = base * (1.0 + rng.normal(0.0, 0.04))            # parlaklık sapması
+    base = base + rng.normal(0.0, 5.0, 3) * np.array([1.0, 0.6, 0.8])  # ton sapması
+    return tuple(int(v) for v in np.clip(base, 0, 255))
 DEPTH_REJECT = 0.03   # ortalama penetrasyon derinliği [m]: mm=normal temas, 3cm+=yanlış yerleşim
 EXTENT_REJECT = 1.5   # giysi/gövde bbox-diyagonal oranı üst sınırı (patlama kapısı)
 # NOT: "itilen vertex oranı" (clearance_ratio) artık RED kriteri DEĞİL — oturan
@@ -122,9 +138,11 @@ def generate(
             asset = garment_assets[(i + seed) % len(garment_assets)]
             params = sample_identity(rng, size, bank)
             sample_id = f"s{seed:03d}_{i:06d}"
+            skin = sample_skin(rng)  # kimlikle birlikte ten de degisir
             try:
                 bundles = {
-                    v: build_conditioning(None, params, asset, OrbitView(v), size=size)
+                    v: build_conditioning(None, params, asset, OrbitView(v), size=size,
+                                          skin_rgb=skin)
                     for v in VIEWS
                 }
             except Exception as e:

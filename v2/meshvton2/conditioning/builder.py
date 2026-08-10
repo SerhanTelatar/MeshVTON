@@ -69,6 +69,9 @@ PHOTO_HANG_PAD = -0.12
 # geçmişte iki kez hata çıktı (bkz. _prealign_garment ders zinciri).
 PHOTO_GARMENT_SCALE = 1.25
 
+# Sentetik gövde teni için geri-uyumlu varsayılan (skin_rgb verilmezse).
+SYNTH_DEFAULT_SKIN = (0.80, 0.62, 0.52)
+
 
 def implementation() -> str:
     """"real" | "stub" — her çağrıda env'den okunur (test izolasyonu için)."""
@@ -179,6 +182,7 @@ def build_conditioning(
     geometry_mask: bool = True,  # foto+mesh: maske = parse ∪ dilate(giysi silüeti); False = yalnız parse
     hang_pad: float = DEFAULT_HANG_PAD,  # giysi üst kenarı askı payı [m] (bkz. DEFAULT_HANG_PAD)
     garment_scale: float = 1.0,  # 1.0 = CLOTH3D metrik ölçeği (bkz. _prealign_garment)
+    skin_rgb: tuple | None = None,  # sentetik modda gövde teni; None => SYNTH_DEFAULT_SKIN
 ) -> ConditioningBundle:
     """Koşullama demetini üretir.
 
@@ -224,6 +228,7 @@ def build_conditioning(
         person_image, smplx_params, garment, view, size=size, device=device,
         person_prep=person_prep, appearance_ref_image=appearance_ref_image,
         geometry_mask=geometry_mask, hang_pad=hang_pad, garment_scale=garment_scale,
+        skin_rgb=skin_rgb,
     )
 
 
@@ -309,7 +314,7 @@ ATR_GARMENT_LABELS = (4, 7)  # upper_clothes, dress — parse'tan giysi silüeti
 def _build_impl_real(
     person_image, smplx_params, garment, view, *, size, device,
     person_prep=None, appearance_ref_image=None, geometry_mask=True, hang_pad=DEFAULT_HANG_PAD,
-    garment_scale=1.0,
+    garment_scale=1.0, skin_rgb=None,
 ):
     import cv2
 
@@ -374,7 +379,12 @@ def _build_impl_real(
 
     # 4) Agnostic + maske
     if person_image is None:  # sentetik mod: GT render'dan türet
-        skin = np.full((len(body["verts"]), 3), (0.80, 0.62, 0.52))
+        # TEN RENGİ: eskiden HER örnekte tek sabit bej (0.80,0.62,0.52) idi — model
+        # ten çeşitliliğini hiç görmedi, teni o tondan uzak kişilerde sistematik
+        # yanlılık üretti (2026-08-10 teşhisi). Artık örnek başına verilebiliyor;
+        # üretici her örnek için rastgele bir ton geçer (synth/generate.py).
+        skin01 = np.array(skin_rgb, np.float64) / 255.0 if skin_rgb else SYNTH_DEFAULT_SKIN
+        skin = np.full((len(body["verts"]), 3), skin01)
         # GT giysi HER ZAMAN gri (appearance ref ile AYNI görünüm).
         # 2026-08-09 teşhisi: GT texture'lıyken ref gri kalıyordu → aynı girdiye
         # bazen desenli bazen gri hedef; desen girdiden ÖNGÖRÜLEMEZ olduğu için
@@ -385,7 +395,13 @@ def _build_impl_real(
         kernel = np.ones((wdt // 30, wdt // 30), np.uint8)
         mask_u8 = cv2.dilate((geo["garment_sil"] * 255).astype(np.uint8), kernel)
         agnostic = gt.copy()
-        agnostic[mask_u8 > 127] = (128, 128, 128)
+        # PARİTE: dolgu rejimi foto yoluyla AYNI anahtardan okunur. Kapalıyken düz
+        # gri (mevcut checkpoint'in eğitildiği rejim), açıkken gövdeyle aynı ten.
+        from meshvton2.conditioning.person import AGNOSTIC_SKIN_FILL
+
+        agnostic[mask_u8 > 127] = (
+            tuple(int(round(v * 255)) for v in skin01) if AGNOSTIC_SKIN_FILL else (128, 128, 128)
+        )
         meta["gt_rgb"] = _to_tensor01(gt.astype(np.float32) / 255.0)
     else:
         agnostic = person_prep.agnostic
