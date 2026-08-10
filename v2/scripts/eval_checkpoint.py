@@ -85,6 +85,14 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=10, help="ilk N kombo")
     ap.add_argument("--angles", type=int, nargs="+", default=[0])
     ap.add_argument("--steps", type=int, default=28)
+    # Askı payı: 2026-08-10 kalibrasyonu (calibrate_hang.py) FOTOĞRAF yolunda
+    # +0.06'nın giysiyi ~21 puan yukarı astığını ölçtü (mesh↔parser IoU 0.295);
+    # -0.12'de 0.480. Varsayılan hâlâ builder'ınki — değeri BURADAN vererek
+    # düzeltmenin uçtan uca geo_iou'yu yükseltip yükseltmediği ölçülür.
+    ap.add_argument("--hang-pad", type=float, default=None,
+                    help="giysi askı payı [m]; verilmezse builder varsayılanı (+0.06)")
+    ap.add_argument("--tag-suffix", default="",
+                    help="çıktı klasör/rapor adına ek (ör. _hp-012) — koşuları ezmemek için")
     args = ap.parse_args()
 
     assert_real_impl()
@@ -115,11 +123,12 @@ def main() -> int:
                 garment_id=garment.id,
                 allow_untextured=True,
             )
+            hp = {} if args.hang_pad is None else {"hang_pad": args.hang_pad}
             bundles = {
                 a: build_conditioning(
                     pp.image, params, asset,
                     PhotoView() if a == 0 else OrbitView(a),
-                    size=size, person_prep=pp,
+                    size=size, person_prep=pp, **hp,
                 )
                 for a in args.angles
             }
@@ -133,8 +142,10 @@ def main() -> int:
                                prompt=base["model"]["prompt"])
     ctx = {"cfg": cfg, "out_root": out_root, "manifest": manifest, "angles": args.angles,
            "prep": prep}
-    s_on = run_variant(sampler, combos, ctx, 1.0, "control_on")
-    s_off = run_variant(sampler, combos, ctx, 0.0, "control_off")
+    # tag-suffix: farklı hang_pad koşuları birbirinin PNG'lerini ezmesin (run_variant
+    # mevcut dosyayı atlar — aynı klasöre yazılsa eski hizalama sessizce korunurdu)
+    s_on = run_variant(sampler, combos, ctx, 1.0, f"control_on{args.tag_suffix}")
+    s_off = run_variant(sampler, combos, ctx, 0.0, f"control_off{args.tag_suffix}")
 
     # KAPI: geo_iou = ÇIKTIDAKİ giysi bölgesi (parse) vs hedef silüet — AÇIK >= KAPALI
     get = lambda s, k: (s["overall"].get(k) or {}).get("mean")
