@@ -57,6 +57,18 @@ DEFAULT_HANG_PAD = 0.06
 # gövdelerinin farklı olmasından; tek global değer ikisine birden uymuyor.
 PHOTO_HANG_PAD = -0.12
 
+# FOTOĞRAF yolu giysi ölçeği. 2026-08-10 kalibrasyonu (calibrate_scale.py, aynı 5
+# doğrulanmış kişi, hang_pad=-0.12): mesh<->parser IoU 1.00'da 0.481, tepe 1.25'te
+# 0.555. Tepe SINIRDA değil (1.10-1.70 tarandı, 1.30'dan sonra düşüyor) ve bağımsız
+# bir tutarlılık kontrolü geçiyor: 1.25'te silüet alanı %19.2, parser'ın ölçtüğü
+# gerçek giysi alanı %18.8 — iki farklı yoldan aynı nokta.
+#
+# Yorum: CLOTH3D giysileri HMR2'nin kestirdiği bedenlere göre sistematik olarak
+# KÜÇÜK kalıyor (sentetik/gerçek beden dağılımı uyumsuzluğu). SENTETİK yol 1.0'da
+# KALIR — orada gövde de giysi de aynı SMPL-X'ten gelir ve yeniden ölçekleme
+# geçmişte iki kez hata çıktı (bkz. _prealign_garment ders zinciri).
+PHOTO_GARMENT_SCALE = 1.25
+
 
 def implementation() -> str:
     """"real" | "stub" — her çağrıda env'den okunur (test izolasyonu için)."""
