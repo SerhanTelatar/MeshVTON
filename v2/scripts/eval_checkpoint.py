@@ -28,7 +28,8 @@ from PIL import Image  # noqa: E402
 
 from meshvton2.conditioning.body import build_hmr2_backend  # noqa: E402
 from meshvton2.conditioning.builder import (  # noqa: E402
-    PHOTO_HANG_PAD, OrbitView, PhotoView, assert_real_impl, build_conditioning)
+    PHOTO_GARMENT_SCALE, PHOTO_HANG_PAD, OrbitView, PhotoView, assert_real_impl,
+    build_conditioning)
 from meshvton2.conditioning.garment import load_garment_asset  # noqa: E402
 from meshvton2.conditioning.person import PersonPreprocessor, person_square_bbox  # noqa: E402
 from meshvton2.eval import harness  # noqa: E402
@@ -92,6 +93,10 @@ def main() -> int:
     # Eski davranışı yeniden ölçmek için: --hang-pad 0.06
     ap.add_argument("--hang-pad", type=float, default=PHOTO_HANG_PAD,
                     help=f"giysi askı payı [m]; varsayılan {PHOTO_HANG_PAD} (foto yolu kalibrasyonu)")
+    # Giysi ölçeği: CLOTH3D mesh'leri HMR2 bedenlerine göre sistematik küçük
+    # (calibrate_scale.py: mesh↔parser IoU 1.00'da 0.481, 1.25'te 0.555).
+    ap.add_argument("--garment-scale", type=float, default=PHOTO_GARMENT_SCALE,
+                    help=f"giysi ölçeği; varsayılan {PHOTO_GARMENT_SCALE} (foto yolu kalibrasyonu)")
     ap.add_argument("--tag-suffix", default="",
                     help="çıktı klasör/rapor adına ek (ör. _hp-012) — koşuları ezmemek için")
     args = ap.parse_args()
@@ -124,7 +129,7 @@ def main() -> int:
                 garment_id=garment.id,
                 allow_untextured=True,
             )
-            hp = {} if args.hang_pad is None else {"hang_pad": args.hang_pad}
+            hp = {"hang_pad": args.hang_pad, "garment_scale": args.garment_scale}
             bundles = {
                 a: build_conditioning(
                     pp.image, params, asset,
