@@ -166,6 +166,7 @@ def build_conditioning(
     appearance_ref_image: np.ndarray | None = None,  # garment=None modunda ZORUNLU (ürün fotoğrafı)
     geometry_mask: bool = True,  # foto+mesh: maske = parse ∪ dilate(giysi silüeti); False = yalnız parse
     hang_pad: float = DEFAULT_HANG_PAD,  # giysi üst kenarı askı payı [m] (bkz. DEFAULT_HANG_PAD)
+    garment_scale: float = 1.0,  # 1.0 = CLOTH3D metrik ölçeği (bkz. _prealign_garment)
 ) -> ConditioningBundle:
     """Koşullama demetini üretir.
 
@@ -210,7 +211,7 @@ def build_conditioning(
     return _build_impl_real(
         person_image, smplx_params, garment, view, size=size, device=device,
         person_prep=person_prep, appearance_ref_image=appearance_ref_image,
-        geometry_mask=geometry_mask, hang_pad=hang_pad,
+        geometry_mask=geometry_mask, hang_pad=hang_pad, garment_scale=garment_scale,
     )
 
 
@@ -224,7 +225,8 @@ def _to_tensor01(img01: np.ndarray) -> torch.Tensor:
     return torch.from_numpy(np.ascontiguousarray(img01.transpose(2, 0, 1))).float() * 2.0 - 1.0
 
 
-def _prealign_garment(gverts: np.ndarray, rest: dict, garment_id: str = "", hang_pad: float = DEFAULT_HANG_PAD) -> np.ndarray:
+def _prealign_garment(gverts: np.ndarray, rest: dict, garment_id: str = "",
+                      hang_pad: float = DEFAULT_HANG_PAD, scale: float = 1.0) -> np.ndarray:
     """Bağlama öncesi hizalama: ÖLÇEK YOK, sadece eksen çevir + askı hizala.
 
     Ders zinciri (QA'da yakalandı): (1) gövde-genişliği ölçeği T-poz kulaç
@@ -241,6 +243,14 @@ def _prealign_garment(gverts: np.ndarray, rest: dict, garment_id: str = "", hang
     mid_sh = (j[16] + j[17]) / 2.0
 
     g = zup_to_yup(np.asarray(gverts, np.float64))  # metrik ölçek KORUNUR
+    # scale=1.0 varsayılanı yukarıdaki "yeniden ölçekleme HER ZAMAN hataydı" dersini
+    # korur. 1.0'dan farklı değer YALNIZCA ampirik kalibrasyon içindir
+    # (v2/scripts/calibrate_scale.py): foto yolunda gövde HMR2'den geldiği için
+    # CLOTH3D'nin SMPL-referanslı ölçeği tam oturmayabiliyor. Ölçek giysinin KENDİ
+    # merkezine göre uygulanır; ardından gelen ortalama+askı hizalaması bozulmaz.
+    if scale != 1.0:
+        c = (g.max(axis=0) + g.min(axis=0)) / 2.0
+        g = (g - c) * scale + c
     g[:, 0] += pelvis[0] - (g[:, 0].max() + g[:, 0].min()) / 2.0
     g[:, 2] += pelvis[2] - (g[:, 2].max() + g[:, 2].min()) / 2.0
     # Hizalama giysinin ÜST KENARINDAN (max y) yapılır — tişörtte yaka rimi, straplez
@@ -251,23 +261,29 @@ def _prealign_garment(gverts: np.ndarray, rest: dict, garment_id: str = "", hang
     return g
 
 
-def _get_binding(garment: GarmentAsset, body_model, hang_pad: float = DEFAULT_HANG_PAD) -> "GarmentBinding":  # noqa: F821
+def _get_binding(garment: GarmentAsset, body_model, hang_pad: float = DEFAULT_HANG_PAD,
+                 scale: float = 1.0) -> "GarmentBinding":  # noqa: F821
     """Giysi bağlamasını cache'ten yükler ya da rest gövdeye kurar ve cache'ler.
-    Cache anahtarı hang_pad'i İÇERİR — farklı askı yüksekliği farklı bağlamadır
-    (eskiden cache yalnız +0.06'da açıktı; varsayılan değişince sessizce kapanırdı)."""
+    Cache anahtarı hang_pad VE scale'i İÇERİR — farklı askı/ölçek farklı bağlamadır
+    (eskiden cache yalnız +0.06'da açıktı; varsayılan değişince sessizce kapanırdı;
+    scale eklenmeseydi kalibrasyon taraması ilk ölçeğin cache'ini okurdu)."""
     from meshvton2.conditioning.lbs_drape import GarmentBinding, bind_garment
 
     cache_path = None
     if garment.lbs_cache:
         p = Path(garment.lbs_cache)
-        cache_path = p.with_name(f"{p.stem}.hp{int(round(hang_pad * 1000)):+04d}{p.suffix}")
+        key = f".hp{int(round(hang_pad * 1000)):+04d}"
+        if scale != 1.0:
+            key += f".sc{int(round(scale * 1000)):04d}"
+        cache_path = p.with_name(f"{p.stem}{key}{p.suffix}")
         if cache_path.exists():
             try:
                 return GarmentBinding.load(cache_path)
             except Exception:  # paralel işçi yarışında yarım yazılmış cache — yeniden kur
                 pass
     rest = body_model.rest()
-    aligned = _prealign_garment(garment.verts, rest, garment.garment_id, hang_pad=hang_pad)
+    aligned = _prealign_garment(garment.verts, rest, garment.garment_id,
+                                hang_pad=hang_pad, scale=scale)
     binding = bind_garment(aligned, rest["verts"], rest["faces"])
     if cache_path is not None:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -281,6 +297,7 @@ ATR_GARMENT_LABELS = (4, 7)  # upper_clothes, dress — parse'tan giysi silüeti
 def _build_impl_real(
     person_image, smplx_params, garment, view, *, size, device,
     person_prep=None, appearance_ref_image=None, geometry_mask=True, hang_pad=DEFAULT_HANG_PAD,
+    garment_scale=1.0,
 ):
     import cv2
 
@@ -311,7 +328,7 @@ def _build_impl_real(
 
     if garment is not None:
         # 2) Drape: rest-binding (cache'li) -> pozlu gövdeye uygula -> clearance
-        binding = _get_binding(garment, body_model, hang_pad=hang_pad)
+        binding = _get_binding(garment, body_model, hang_pad=hang_pad, scale=garment_scale)
         gverts = apply_binding(binding, body["verts"])
         gverts, clearance_ratio, pen_depth = push_clearance(gverts, body["verts"], body["faces"])
         # Patlama dedektörü: drape edilmiş giysi gövdeden ne kadar büyük?
