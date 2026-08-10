@@ -89,8 +89,12 @@ def main() -> int:
 
     lo, hi, step = args.range
     scales = np.arange(lo, hi + 1e-9, step)
+    # HEDEF alan: parser'ın bulduğu gerçek giysi. Silüet% bunun etrafında tepe yapmalı —
+    # çok küçükse örtüşme eksik, çok büyükse birleşim şişer; IoU her iki uçta düşer.
+    worn_pct = float(np.mean([w.mean() for *_, w in people])) * 100
     print(f"giysi: {gid} | kişi: {len(people)} | hang_pad={args.hang_pad:+.2f} | "
-          f"ölçek taraması: {lo:.2f} → {hi:.2f} adım {step:.2f}\n")
+          f"ölçek taraması: {lo:.2f} → {hi:.2f} adım {step:.2f}")
+    print(f"HEDEF: gerçek giysi alanı (parser) = %{worn_pct:.1f} — silüet% buna yaklaşmalı\n")
     print(f"{'ölçek':>7} {'ort.IoU':>8} {'silüet%':>8}   " + "  ".join(f"{p:>9}" for p, *_ in people))
 
     rows = []
@@ -112,6 +116,10 @@ def main() -> int:
     best_sc, best_iou, _ = max(rows, key=lambda r: r[1])
     cur = next((r for r in rows if abs(r[0] - 1.0) < 1e-6), None)
     print(f"\nEN İYİ: ölçek={best_sc:.2f} → ort.IoU={best_iou:.3f}")
+    # Tepe aralığın UCUNDAysa optimum dışarıda kalmıştır — sayıyı kullanma, aralığı genişlet
+    if abs(best_sc - rows[-1][0]) < 1e-6 or abs(best_sc - rows[0][0]) < 1e-6:
+        print(f"UYARI: tepe tarama SINIRINDA ({best_sc:.2f}) — gerçek optimum aralığın DIŞINDA.")
+        print(f"  Aralığı genişletip tekrar koşun, ör: --range {best_sc:.2f} {best_sc + 0.5:.2f} 0.05")
     if cur:
         print(f"MEVCUT: ölçek=1.00 → ort.IoU={cur[1]:.3f}  (fark {best_iou - cur[1]:+.3f})")
     if cur and best_iou - cur[1] < 0.02:
