@@ -97,6 +97,10 @@ def main() -> int:
     # (calibrate_scale.py: mesh↔parser IoU 1.00'da 0.481, 1.25'te 0.555).
     ap.add_argument("--garment-scale", type=float, default=PHOTO_GARMENT_SCALE,
                     help=f"giysi ölçeği; varsayılan {PHOTO_GARMENT_SCALE} (foto yolu kalibrasyonu)")
+    # use_texture: KURAL gereği varsayılan False. TEK meşru kullanımı 2026-07-06
+    # texture'lı checkpoint'i (stage1_july) kendi rejiminde ölçmek (bkz. builder.py notu).
+    ap.add_argument("--use-texture", action="store_true",
+                    help="appearance ref TEXTURE'LI olsun (yalnız Temmuz checkpoint'i için)")
     ap.add_argument("--tag-suffix", default="",
                     help="çıktı klasör/rapor adına ek (ör. _hp-012) — koşuları ezmemek için")
     args = ap.parse_args()
@@ -129,7 +133,8 @@ def main() -> int:
                 garment_id=garment.id,
                 allow_untextured=True,
             )
-            hp = {"hang_pad": args.hang_pad, "garment_scale": args.garment_scale}
+            hp = {"hang_pad": args.hang_pad, "garment_scale": args.garment_scale,
+                  "use_texture": args.use_texture}
             bundles = {
                 a: build_conditioning(
                     pp.image, params, asset,
