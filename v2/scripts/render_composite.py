@@ -52,11 +52,28 @@ LIGHT /= np.linalg.norm(LIGHT)
 AMBIENT, DIFFUSE = 0.42, 0.58  # ambient tabanı olmadan gölgeler tıkanıp siyaha düşüyor
 
 
-def shade(normal_chw: np.ndarray) -> np.ndarray:
-    """(3,H,W) [-1,1] normaller → (H,W) [0,1] Lambert yoğunluğu."""
+def shade(normal_chw: np.ndarray, sil: np.ndarray) -> tuple[np.ndarray, dict]:
+    """(3,H,W) [-1,1] normaller → (H,W) [0,1] Lambert yoğunluğu + teşhis.
+
+    z-İŞARETİ OTOMATİK: kamera sözleşmesi (+y aşağı) yüzünden kameraya bakan
+    yüzeylerin n_z işareti sabit değil. Yanlış işarette n·L her yerde negatife
+    düşer, clip(0) ile her piksel ambient'e oturur ve kompozit DÜZ KOYU çıkar
+    (ilk koşuda tam olarak bu oldu). Silüet içindeki ortalama n_z'ye bakıp
+    ışığın z bileşenini ona göre çeviriyoruz.
+    """
     n = normal_chw.transpose(1, 2, 0).astype(np.float64)
     n /= np.linalg.norm(n, axis=2, keepdims=True) + 1e-8
-    return AMBIENT + DIFFUSE * np.clip(n @ LIGHT, 0.0, 1.0)
+    nz = float(n[sil][:, 2].mean()) if sil.any() else 0.0
+    L = LIGHT.copy()
+    if nz < 0:
+        L[2] = -L[2]
+    inten = AMBIENT + DIFFUSE * np.clip(n @ L, 0.0, 1.0)
+    vals = inten[sil] if sil.any() else np.array([0.0])
+    diag = {"nz": nz, "z_cevrildi": nz < 0,
+            "gri_p5": int(np.percentile(vals, 5) * 255),
+            "gri_p95": int(np.percentile(vals, 95) * 255),
+            "std": float(vals.std())}
+    return inten, diag
 
 
 def main() -> int:
@@ -100,9 +117,17 @@ def main() -> int:
                                garment_scale=PHOTO_GARMENT_SCALE)
 
         sil = b.control_depth_sil[2].numpy() > 0
-        inten = shade(b.control_normal.numpy())
+        inten, d = shade(b.control_normal.numpy(), sil)
         comp = pp.image.copy()
         comp[sil] = np.clip(inten[sil, None] * 255.0, 0, 255).astype(np.uint8)
+        # Silüet DELİK oranı: drape edilmiş giysi gövdeye giriyorsa derinlik testi
+        # parçalar kesiyor → kompozitte eski giysi ortadan sızar (gerçek bir bulgu,
+        # artefakt değil). Dolu gövde = morfolojik kapama sonrası alan.
+        import cv2
+
+        k = np.ones((max(size[1] // 40, 3),) * 2, np.uint8)
+        closed = cv2.morphologyEx(sil.astype(np.uint8), cv2.MORPH_CLOSE, k) > 0
+        delik = 1.0 - sil.sum() / max(closed.sum(), 1)
         Image.fromarray(comp).save(out_dir / f"{person.id}__{garment.id}.composite.png")
 
         row = [("kişi", pp.image), ("3B RENDER KOMPOZİTİ (üst sınır)", comp)]
@@ -113,7 +138,10 @@ def main() -> int:
         else:
             print(f"  NOT: model çıktısı yok ({p.name}) — o panel atlandı")
         panels_all.append((f"{person.id} × {garment.id}", row))
-        print(f"OK {person.id} × {garment.id}")
+        print(f"OK {person.id} × {garment.id}  |  n_z={d['nz']:+.2f}"
+              f"{' (ışık z ÇEVRİLDİ)' if d['z_cevrildi'] else ''}"
+              f"  gri {d['gri_p5']}-{d['gri_p95']} std={d['std']:.3f}"
+              f"  silüet delik oranı=%{delik*100:.1f}")
 
     TH = 230
     hh = round(TH * size[0] / size[1])
