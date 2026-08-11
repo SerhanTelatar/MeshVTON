@@ -97,8 +97,8 @@ def main() -> int:
                 if a is not None:
                     grid.paste(Image.fromarray(a), (c * TH, r * hh))
                 c += 1
-    heads = ["kişi"] + [f"{s.replace('ckpt_control_on', '')}|{g.split('__')[-1]}"
-                        for s in args.sets for g in gids]
+    heads = ["person"] + [f"{s.replace('ckpt_control_on', '')}|{g.split('__')[-1]}"
+                          for s in args.sets for g in gids]
     f1 = Image.new("RGB", (grid.width, grid.height + 26), "white")
     f1.paste(label_strip(grid.width, heads, TH), (0, 0))
     f1.paste(grid, (0, 26))
@@ -121,7 +121,8 @@ def main() -> int:
             a = load(Path(f"{stem(s, pid, gid)}.png"), sz)
             if a is not None:
                 grid2.paste(Image.fromarray(a), ((2 + i) * TH, r * hh))
-    heads2 = ["kişi", "giysi referansı"] + [s.replace("ckpt_control_on", "çıktı") for s in args.sets]
+    heads2 = ["person", "garment reference"] + [s.replace("ckpt_control_on", "output")
+                                                for s in args.sets]
     f2 = Image.new("RGB", (grid2.width, grid2.height + 26), "white")
     f2.paste(label_strip(grid2.width, heads2, TH), (0, 0))
     f2.paste(grid2, (0, 26))

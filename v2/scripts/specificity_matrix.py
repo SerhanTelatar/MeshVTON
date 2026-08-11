@@ -95,7 +95,7 @@ def main() -> int:
     for k, (s, mat, diag, off) in enumerate(panels):
         x0 = k * W + PAD
         d.text((k * W + 8, 14), s.replace("ckpt_", ""), fill="black")
-        d.text((k * W + 8, 30), f"ayirt edicilik {diag - off:+.4f}", fill="black")
+        d.text((k * W + 8, 30), f"specificity {diag - off:+.4f}", fill="black")
         for j, t in enumerate(short):  # sütun başlıkları (HEDEF silüet)
             d.text((x0 + j * C + 4, PAD - 22), t[:9], fill="black")
         for i, t in enumerate(short):  # satır başlıkları (ÜRETİLEN çıktı)
@@ -111,8 +111,8 @@ def main() -> int:
                             width=3 if i == j else 0)
                 d.text((box[0] + C // 2 - 16, box[1] + C // 2 - 6), f"{v:.2f}",
                        fill="white" if v < (lo + hi) / 2 else "black")
-        d.text((x0, PAD + n * C + 8), "sütun = HEDEF mesh silüeti", fill="black")
-        d.text((x0, PAD + n * C + 26), "satır = ÜRETİLEN çıktının silüeti", fill="black")
+        d.text((x0, PAD + n * C + 8), "columns: target mesh silhouette", fill="black")
+        d.text((x0, PAD + n * C + 26), "rows: generated garment region", fill="black")
 
     out = fig_dir / f"fig_specificity_matrix__{pid}.png"
     im.save(out)
