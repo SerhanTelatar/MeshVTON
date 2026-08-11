@@ -2,19 +2,19 @@
 golden_manifest: v2/data/golden/manifest.json
 angles: [0, 90, 180, 270]
 
-# Tahmin dosyası adlandırma sözleşmesi (pred-dir içinde):
+# Prediction file naming contract (inside pred-dir):
 #   {person_id}_{garment_id}_{angle:03d}.png
-# Opsiyonel yardımcı dosyalar aynı dizinde, aynı gövde adıyla:
-#   {stem}.person.png  — orijinal kişi fotoğrafı (identity-koruma metrikleri için)
-#   {stem}.mask.png    — inpaint maskesi (1=giysi bölgesi)
-#   {stem}.sil.png     — koşullamadaki giysi silüeti
-#   {stem}.ref.png     — dokulu görünüm referansı (appearance ref)
-#   {stem}.gt.png      — ground truth (yalnız sentetik holdout'ta var)
+# Optional auxiliary files in the same directory, with the same stem:
+#   {stem}.person.png  — the original person photo (for the identity-preservation metrics)
+#   {stem}.mask.png    — the inpaint mask (1=garment region)
+#   {stem}.sil.png     — the garment silhouette in the conditioning
+#   {stem}.ref.png     — the textured appearance reference
+#   {stem}.gt.png      — ground truth (only present in the synthetic holdout)
 pred_pattern: "{person_id}_{garment_id}_{angle:03d}.png"
 
-# Faz kapıları (scripts/eval.py raporda bunlarla karşılaştırır):
+# Phase gates (scripts/eval.py compares against these in the report):
 thresholds:
-  phase2_camera_iou: 0.70          # SMPL-X reprojeksiyon vs parser maskesi
-  phase5_backview_lpips_gain: 0.20 # 180° giysi-LPIPS iyileşmesi (Aşama-1'e karşı)
-  phase5_delta_e_std: 5.0          # görüşler-arası giysi ΔE std
+  phase2_camera_iou: 0.70          # SMPL-X reprojection vs the parser mask
+  phase5_backview_lpips_gain: 0.20 # 180° garment-LPIPS improvement (against Stage 1)
+  phase5_delta_e_std: 5.0          # cross-view garment ΔE std
   phase5_frontview_regression: 0.03

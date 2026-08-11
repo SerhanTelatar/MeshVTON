@@ -1,12 +1,12 @@
-"""Sentetik gövde/kamera örnekleme.
+"""Synthetic body/camera sampling.
 
-Sentetik modda HMR2 yoktur; onun rolünü örneklenmiş parametreler oynar:
-`fabricate_camera_params` sahte pred_cam+bbox üretir ve builder FOTOĞRAFLA
-BİREBİR AYNI weak-persp→perspektif yolundan geçer (parite tasarım gereği).
+In synthetic mode there is no HMR2; sampled parameters play its role:
+`fabricate_camera_params` produces a fake pred_cam+bbox and the builder goes through the
+EXACT SAME weak-persp→perspective path as a PHOTO (parity by design).
 
-Poz kaynağı önceliği: poses_file (HMR2'nin VITON-HD üzerindeki tahminlerinden
-(N,63) .npy — hedef dağılımla birebir) > A-pose'a hafif gürültü (fallback;
-kontrat/duman testleri için yeterli, üretim verisi için poses_file önerilir).
+Pose source priority: poses_file (an (N,63) .npy from HMR2's predictions over VITON-HD —
+matching the target distribution exactly) > A-pose with slight noise (fallback; enough for
+contract/smoke tests, poses_file is recommended for production data).
 """
 
 from __future__ import annotations
@@ -15,16 +15,16 @@ from pathlib import Path
 
 import numpy as np
 
-# Fallback beden çeşitliliği. DAR tutulur: hedef alan VITON-HD (manken fotoğrafları),
-# uç bedenler orada YOK. Eskiden 1.2/2.5 idi ve QA'da aşırı iri gövdeler üretti —
-# CLOTH3D giysisi (ortalama SMPL bedeni için modellenmiş) onları örtemeyip yırtıldı,
-# omuz/göğüste gövde kumaşın içinden fırladı (2026-08-09 QA görselleri).
+# Fallback body diversity. Kept NARROW: the target domain is VITON-HD (model photos),
+# extreme bodies do NOT exist there. It used to be 1.2/2.5 and produced oversized bodies in
+# QA — the CLOTH3D garment (modelled for an average SMPL body) could not cover them and tore,
+# the body poked through the cloth at the shoulder/chest (2026-08-09 QA images).
 BETA_STD = 0.6
 BETA_CLIP = 1.6
 
-# SMPL body_pose (63 = 21 eklem × 3) PELVİSİ İÇERMEZ: body_pose[i] ↔ tam iskelet
-# eklemi i+1. Dolayısıyla L_shoulder(16)→15, R_shoulder(17)→16. Eskiden 16/17
-# yazılıydı; bu R_shoulder + L_ELBOW demekti (sol omuz T-pozda kalıyordu).
+# SMPL body_pose (63 = 21 joints × 3) DOES NOT INCLUDE THE PELVIS: body_pose[i] ↔ full
+# skeleton joint i+1. So L_shoulder(16)→15, R_shoulder(17)→16. It used to say 16/17;
+# that meant R_shoulder + L_ELBOW (the left shoulder stayed in the T-pose).
 _L_SHOULDER, _R_SHOULDER = 15, 16
 
 
@@ -33,7 +33,7 @@ def sample_betas(rng: np.random.RandomState) -> np.ndarray:
 
 
 def _a_pose(rng: np.random.RandomState) -> np.ndarray:
-    """Kollar ~55° indirilmiş doğal duruş + hafif gürültü (SMPL-X body_pose 63)."""
+    """Natural stance with the arms lowered ~55° + slight noise (SMPL-X body_pose 63)."""
     pose = np.zeros(63, np.float32)
     pose[_L_SHOULDER * 3 + 2] = -0.95
     pose[_R_SHOULDER * 3 + 2] = 0.95
@@ -42,14 +42,14 @@ def _a_pose(rng: np.random.RandomState) -> np.ndarray:
 
 
 def load_identity_bank(poses_file: str | Path | None) -> dict | None:
-    """Gerçek kişilerden KİMLİK bankası: body_pose (N,63) + varsa betas (N,10).
+    """IDENTITY bank from real people: body_pose (N,63) + betas (N,10) when available.
 
-    Poz ve beden AYNI kişiden EŞLEŞMİŞ çift olarak alınır — sentetik gövde dağılımı
-    böylece çıkarım dağılımıyla (VITON-HD) birebir örtüşür. Eskiden yalnız poz
-    alınıp beden rastgele örnekleniyordu; sonuç, gerçek hayatta hiç görülmeyen
-    uç bedenlerde yırtılan giysilerdi.
+    Pose and body are taken as a MATCHED pair from the SAME person — this makes the synthetic
+    body distribution overlap exactly with the inference distribution (VITON-HD). It used to
+    take only the pose and sample the body at random; the result was garments tearing on
+    extreme bodies that never occur in real life.
 
-    Kaynak: (N,63) .npy VEYA body_pose içeren .npz klasörü (v1 extract_smplx çıktısı).
+    Source: an (N,63) .npy OR a folder of .npz files containing body_pose (v1 extract_smplx output).
     """
     if poses_file is None:
         return None
@@ -64,24 +64,24 @@ def load_identity_bank(poses_file: str | Path | None) -> dict | None:
             b = d["betas"].reshape(-1) if "betas" in d else None
             betas.append(b[:10] if b is not None and b.shape[0] >= 10 else None)
         if not poses:
-            raise ValueError(f"{p} içinde body_pose'lu .npz yok")
+            raise ValueError(f"no .npz with body_pose inside {p}")
         bank = {"body_pose": np.stack(poses).astype(np.float32), "betas": None}
         if all(b is not None for b in betas):
             bank["betas"] = np.stack(betas).astype(np.float32)
         return bank
     arr = np.load(p)
     if arr.ndim != 2 or arr.shape[1] != 63:
-        raise ValueError(f"poses_file (N,63) olmalı, gelen {arr.shape}")
+        raise ValueError(f"poses_file must be (N,63), got {arr.shape}")
     return {"body_pose": arr.astype(np.float32), "betas": None}
 
 
 def fabricate_camera_params(rng: np.random.RandomState, size: tuple[int, int]) -> dict:
-    """Sahte pred_cam+bbox: VITON-HD benzeri tam boy kadraj + hafif jitter.
+    """Fake pred_cam+bbox: VITON-HD-like full-body framing + slight jitter.
 
-    global_orient = [π,0,0]: SMPL-X model uzayı y-YUKARI, kamera sözleşmemiz
-    y-AŞAĞI — gerçek fotoğraflarda bu dönüşü HMR2'nin global_orient'i taşır,
-    sentetikte biz taşırız (0 bırakınca gövde görüntüde BAŞ AŞAĞI çıkıyordu,
-    QA'da yakalandı). Kişi kameraya dönüktür; arka görünüm ORBIT ile alınır."""
+    global_orient = [π,0,0]: the SMPL-X model space is y-UP while our camera convention is
+    y-DOWN — on real photos HMR2's global_orient carries this rotation, in synthetic mode we
+    carry it (leaving it at 0 made the body come out UPSIDE DOWN in the image, caught in QA).
+    The person faces the camera; the back view is obtained with an ORBIT."""
     h, w = size
     return {
         "pred_cam": np.array([rng.uniform(0.85, 1.05), 0.0, rng.uniform(-0.02, 0.08)], np.float32),
@@ -92,11 +92,11 @@ def fabricate_camera_params(rng: np.random.RandomState, size: tuple[int, int]) -
 
 
 def sample_identity(rng: np.random.RandomState, size: tuple[int, int], bank: dict | None = None) -> dict:
-    """builder sözleşmesine hazır tam smplx_params seti.
+    """A full smplx_params set, ready for the builder contract.
 
-    Banka betas içeriyorsa poz+beden AYNI indeksten (aynı gerçek kişiden) alınır —
-    çiftin tutarlılığı önemlidir: zayıf bir gövdeye şişman bir poz takmak, ya da
-    tersi, gerçek dağılımda olmayan bir kimlik üretir.
+    If the bank contains betas, pose and body are taken from the SAME index (the same real
+    person) — the pair's consistency matters: putting a heavy pose on a thin body, or the
+    reverse, produces an identity that does not exist in the real distribution.
     """
     p = fabricate_camera_params(rng, size)
     if bank is None:

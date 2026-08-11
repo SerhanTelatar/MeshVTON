@@ -1,12 +1,12 @@
-"""Rectified flow (FLUX-native) eğitim matematiği.
+"""Rectified flow (FLUX-native) training maths.
 
-Sözleşme (FLUX/SD3 ailesiyle aynı):
-    x_t   = (1 - t)·x0 + t·ε            t ∈ (0,1); t=0 temiz, t=1 saf gürültü
-    hedef v = ε - x0                     (velocity)
-    x0    = x_t - t·v                    (önizleme/tutarlılık kaybı için geri çözüm)
+Contract (the same as the FLUX/SD3 family):
+    x_t   = (1 - t)·x0 + t·ε            t ∈ (0,1); t=0 clean, t=1 pure noise
+    target v = ε - x0                    (velocity)
+    x0    = x_t - t·v                    (solved back for preview/consistency loss)
 
-Zaman örnekleme: logit-normal (FLUX eğitim tarifi) + çözünürlüğe bağlı shift —
-uzun token dizilerinde t dağılımını gürültüye kaydırır (SD3 §5.3.2 tarifi:
+Time sampling: logit-normal (the FLUX training recipe) + a resolution-dependent shift —
+for long token sequences it shifts the t distribution towards noise (the SD3 §5.3.2 recipe:
 t' = s·t / (1 + (s-1)·t)).
 """
 
@@ -25,14 +25,14 @@ def sample_logit_normal_t(
     generator: torch.Generator | None = None,
     device: str | torch.device = "cpu",
 ) -> torch.Tensor:
-    """(B,) t ~ sigmoid(N(mean, std)) — uçlara (0/1) az, ortaya çok kütle."""
+    """(B,) t ~ sigmoid(N(mean, std)) — little mass at the ends (0/1), a lot in the middle."""
     z = torch.randn(batch, generator=generator, device=device) * std + mean
     return torch.sigmoid(z)
 
 
 def resolution_shift(seq_len: int, base_seq_len: int = 256, base_shift: float = 0.5, max_shift: float = 1.15) -> float:
-    """FLUX'un dinamik shift'i: token sayısı arttıkça mu doğrusal büyür.
-    (diffusers FluxPipeline.calculate_shift ile aynı form; s = exp(mu))."""
+    """FLUX's dynamic shift: mu grows linearly with the token count.
+    (Same form as diffusers FluxPipeline.calculate_shift; s = exp(mu))."""
     max_seq_len = 4096
     m = (max_shift - base_shift) / (max_seq_len - base_seq_len)
     mu = base_shift + m * (seq_len - base_seq_len)
@@ -40,7 +40,7 @@ def resolution_shift(seq_len: int, base_seq_len: int = 256, base_shift: float = 
 
 
 def apply_shift(t: torch.Tensor, shift: float) -> torch.Tensor:
-    """t' = s·t / (1 + (s-1)·t). s=1 → kimlik; s>1 → t'yi 1'e (gürültüye) yaklaştırır."""
+    """t' = s·t / (1 + (s-1)·t). s=1 → identity; s>1 → pushes t towards 1 (towards noise)."""
     return shift * t / (1.0 + (shift - 1.0) * t)
 
 
@@ -62,8 +62,8 @@ def x0_from_v(x_t: torch.Tensor, v: torch.Tensor, t: torch.Tensor) -> torch.Tens
 
 
 def rf_loss(v_pred: torch.Tensor, x0: torch.Tensor, noise: torch.Tensor, token_mask: torch.Tensor | None = None) -> torch.Tensor:
-    """MSE(v_pred, ε−x0). token_mask (B,L) verilirse yalnız o token'larda —
-    referans token'ları kayba GİRMEZ (her adımda temiz verilirler)."""
+    """MSE(v_pred, ε−x0). If token_mask (B,L) is given, only over those tokens —
+    the reference tokens do NOT enter the loss (they are given clean at every step)."""
     err = (v_pred - rf_target(x0, noise)) ** 2
     if token_mask is None:
         return err.mean()
@@ -75,7 +75,7 @@ def rf_loss(v_pred: torch.Tensor, x0: torch.Tensor, noise: torch.Tensor, token_m
 
 
 def make_sigma_schedule(steps: int, seq_len: int) -> torch.Tensor:
-    """(steps+1,) azalan sigma çizelgesi: 1 → 0, çözünürlük shift'li.
-    Örnekleme Euler adımı: x_{i+1} = x_i + (σ_{i+1} − σ_i)·v(x_i, σ_i)."""
+    """(steps+1,) a decreasing sigma schedule: 1 → 0, with the resolution shift.
+    The sampling Euler step: x_{i+1} = x_i + (σ_{i+1} − σ_i)·v(x_i, σ_i)."""
     t = torch.linspace(1.0, 0.0, steps + 1)
     return apply_shift(t, resolution_shift(seq_len))

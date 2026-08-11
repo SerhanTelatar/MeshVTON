@@ -1,7 +1,7 @@
-"""lbs_drape.py testleri: sentetik silindir gövde + giysi halkası (SMPL-X gerektirmez).
+"""lbs_drape.py tests: a synthetic cylinder body + garment ring (no SMPL-X required).
 
-Faz 2 çıkış kriterindeki görsel drape QA (gerçek CLOTH3D + SMPL-X) Colab'da;
-buradakiler bağlama/uygulama matematiğinin değişmezlerini kilitler.
+The visual drape QA in the Phase 2 exit criteria (real CLOTH3D + SMPL-X) happens on Colab;
+these tests lock in the invariants of the binding/application maths.
 """
 
 import numpy as np
@@ -17,7 +17,7 @@ from meshvton2.conditioning.lbs_drape import (
 
 
 def cylinder(radius=1.0, height=2.0, n_seg=24, n_rows=8):
-    """Basit açık silindir mesh'i (gövde vekili)."""
+    """A simple open cylinder mesh (a stand-in for the body)."""
     verts, faces = [], []
     for r in range(n_rows):
         y = height * r / (n_rows - 1) - height / 2
@@ -28,12 +28,12 @@ def cylinder(radius=1.0, height=2.0, n_seg=24, n_rows=8):
         for s in range(n_seg):
             a, b = r * n_seg + s, r * n_seg + (s + 1) % n_seg
             c, d = a + n_seg, b + n_seg
-            faces += [[a, c, b], [b, c, d]]  # dışa bakan sarım (CCW)
+            faces += [[a, c, b], [b, c, d]]  # outward-facing winding (CCW)
     return np.array(verts, np.float64), np.array(faces, np.int64)
 
 
 BODY_V, BODY_F = cylinder()
-GARMENT = cylinder(radius=1.05, height=1.0, n_rows=4)[0]  # gövdeyi saran halka
+GARMENT = cylinder(radius=1.05, height=1.0, n_rows=4)[0]  # a ring wrapping the body
 
 
 def test_vertex_normals_point_outward():
@@ -41,11 +41,11 @@ def test_vertex_normals_point_outward():
     radial = BODY_V.copy()
     radial[:, 1] = 0
     radial /= np.linalg.norm(radial, axis=1, keepdims=True)
-    assert ((n * radial).sum(1) > 0.9).all()  # silindirde normaller radyal dışa
+    assert ((n * radial).sum(1) > 0.9).all()  # on a cylinder the normals point radially outward
 
 
 def test_rest_pose_roundtrip():
-    """Gövde deforme olmadıysa giysi olduğu gibi geri gelir."""
+    """If the body did not deform, the garment comes back unchanged."""
     binding = bind_garment(GARMENT, BODY_V, BODY_F)
     out = apply_binding(binding, BODY_V)
     assert np.abs(out - GARMENT).max() < 1e-9
@@ -59,7 +59,7 @@ def test_translation_follows():
 
 
 def test_rigid_rotation_follows():
-    """Gövde rijit dönerse giysi de aynı rijit dönüşle takip eder."""
+    """If the body rotates rigidly, the garment follows with the same rigid rotation."""
     binding = bind_garment(GARMENT, BODY_V, BODY_F)
     a = np.deg2rad(40)
     R = np.array([[np.cos(a), 0, np.sin(a)], [0, 1, 0], [-np.sin(a), 0, np.cos(a)]])
@@ -68,7 +68,7 @@ def test_rigid_rotation_follows():
 
 
 def test_radial_scale_follows():
-    """Gövde şişerse (beta değişimi vekili) giysi dışarı taşınır."""
+    """If the body inflates (a stand-in for a beta change), the garment is pushed outward."""
     binding = bind_garment(GARMENT, BODY_V, BODY_F)
     fat = BODY_V.copy()
     fat[:, [0, 2]] *= 1.2
@@ -78,19 +78,19 @@ def test_radial_scale_follows():
 
 
 def test_push_clearance():
-    """İçeri gömülen giysi vertex'i clearance mesafesine itilir; derinlik raporlanır."""
+    """A garment vertex sunk inside is pushed out to the clearance distance; the depth is reported."""
     sunk = GARMENT.copy()
-    sunk[:, [0, 2]] *= 0.9 / 1.05  # yarıçapı gövdenin İÇİNE çek (~0.15 derinlik)
+    sunk[:, [0, 2]] *= 0.9 / 1.05  # pull the radius INSIDE the body (~0.15 depth)
     fixed, ratio, depth = push_clearance(sunk, BODY_V, BODY_F, clearance=0.02)
-    assert ratio > 0.9  # nerdeyse hepsi düzeltildi
-    assert 0.05 < depth < 0.3  # ortalama penetrasyon ~0.14m (derin gömülme sinyali)
+    assert ratio > 0.9  # almost all of them were corrected
+    assert 0.05 < depth < 0.3  # mean penetration ~0.14m (a deep-sinking signal)
     n = vertex_normals(BODY_V, BODY_F)
     from meshvton2.conditioning.lbs_drape import _knn
 
     idx, _ = _knn(fixed, BODY_V, 1)
     signed = ((fixed - BODY_V[idx[:, 0]]) * n[idx[:, 0]]).sum(1)
     assert (signed > 0.019).all()
-    # dışarıda olan vertex'lere dokunulmaz, derinlik ~0
+    # vertices that are outside are left untouched, the depth is ~0
     _, ratio0, depth0 = push_clearance(GARMENT, BODY_V, BODY_F, clearance=0.02)
     assert ratio0 < 0.05 and depth0 < 0.01
 

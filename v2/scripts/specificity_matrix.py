@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Mesh özgüllük MATRİSİ figürü — tezin ana görsel kanıtı.
+"""Mesh specificity MATRIX figure — the thesis's main visual evidence.
 
-Bir kişi için N×N ısı haritası: satır = i. giysiyle ÜRETİLEN çıktının silüeti,
-sütun = j. giysinin HEDEF silüeti, hücre = IoU. Köşegen (doğru eşleşme) parlaksa
-model verilen mesh'e özeldir. `mesh_specificity.py` bu sayıyı hesaplıyordu;
-bu script onu görselleştirir.
+An N×N heat map for one person: row = the silhouette of the output GENERATED with garment i,
+column = the TARGET silhouette of garment j, cell = IoU. If the diagonal (the correct match)
+is bright, the model is specific to the mesh it was given. `mesh_specificity.py` computed this
+number; this script visualizes it.
 
-Difüzyon YOK — mevcut .predsil.png / .sil.png dosyalarını okur.
+NO diffusion — it reads the existing .predsil.png / .sil.png files.
 
-Kullanım:
+Usage:
   python v2/scripts/specificity_matrix.py --sets ckpt_control_on_july ckpt_control_off_july
   [--person 00000_00] [--cell 90]
 """
@@ -32,7 +32,7 @@ from meshvton2.eval.harness import _load_mask  # noqa: E402
 
 
 def heat(v: float, lo: float, hi: float) -> tuple[int, int, int]:
-    """Düşük = koyu lacivert, yüksek = sarı (algısal olarak monoton, gri baskıda da okunur)."""
+    """Low = dark navy, high = yellow (perceptually monotonic, still readable in greyscale print)."""
     t = 0.0 if hi <= lo else float(np.clip((v - lo) / (hi - lo), 0, 1))
     return (int(30 + 225 * t ** 0.8), int(30 + 195 * t ** 1.1), int(90 - 60 * t))
 
@@ -40,9 +40,9 @@ def heat(v: float, lo: float, hi: float) -> tuple[int, int, int]:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--sets", nargs="+", required=True)
-    ap.add_argument("--person", default=None, help="varsayılan: ilk kişi")
+    ap.add_argument("--person", default=None, help="default: the first person")
     ap.add_argument("--angle", type=int, default=0)
-    ap.add_argument("--cell", type=int, default=90, help="hücre kenarı [px]")
+    ap.add_argument("--cell", type=int, default=90, help="cell side [px]")
     args = ap.parse_args()
 
     base = yaml.safe_load((REPO / "v2/configs/base.yaml").read_text())
@@ -76,15 +76,15 @@ def main() -> int:
                 if v is not None:
                     mat[i, j] = v
         if np.all(np.isnan(mat)):
-            print(f"{s}: .predsil/.sil yok — atlandı", file=sys.stderr)
+            print(f"{s}: no .predsil/.sil — skipped", file=sys.stderr)
             continue
         diag = np.nanmean(np.diag(mat))
         off = np.nanmean(mat[~np.eye(n, dtype=bool)])
         panels.append((s, mat, diag, off))
-        print(f"{s}: köşegen={diag:.4f} köşegen-dışı={off:.4f} ayırt edicilik={diag-off:+.4f}")
+        print(f"{s}: diagonal={diag:.4f} off-diagonal={off:.4f} specificity={diag-off:+.4f}")
 
     if not panels:
-        raise SystemExit("HATA: hiç matris kurulamadı")
+        raise SystemExit("ERROR: no matrix could be built")
 
     lo = min(np.nanmin(m) for _, m, _, _ in panels)
     hi = max(np.nanmax(m) for _, m, _, _ in panels)
@@ -96,9 +96,9 @@ def main() -> int:
         x0 = k * W + PAD
         d.text((k * W + 8, 14), s.replace("ckpt_", ""), fill="black")
         d.text((k * W + 8, 30), f"specificity {diag - off:+.4f}", fill="black")
-        for j, t in enumerate(short):  # sütun başlıkları (HEDEF silüet)
+        for j, t in enumerate(short):  # column headers (TARGET silhouette)
             d.text((x0 + j * C + 4, PAD - 22), t[:9], fill="black")
-        for i, t in enumerate(short):  # satır başlıkları (ÜRETİLEN çıktı)
+        for i, t in enumerate(short):  # row headers (GENERATED output)
             d.text((k * W + 6, PAD + i * C + C // 2 - 6), t, fill="black")
         for i in range(n):
             for j in range(n):
@@ -116,7 +116,7 @@ def main() -> int:
 
     out = fig_dir / f"fig_specificity_matrix__{pid}.png"
     im.save(out)
-    print(f"\n{out}\nKöşegen (beyaz çerçeveli) parlaksa model verilen mesh'e ÖZELDİR.")
+    print(f"\n{out}\nIf the diagonal (white outlined) is bright, the model is SPECIFIC to the mesh it was given.")
     return 0
 
 

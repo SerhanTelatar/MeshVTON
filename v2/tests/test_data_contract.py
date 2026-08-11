@@ -1,5 +1,5 @@
-"""Sentetik veri dizin sözleşmesi testi (stub builder'la lokalde koşar;
-Colab'da aynı test gerçek hatla koşar — conftest MESHVTON2_STUB'ı otomatik seçer)."""
+"""Synthetic data directory contract test (runs locally with the stub builder;
+on Colab the same test runs against the real pipeline — conftest picks MESHVTON2_STUB automatically)."""
 
 import csv
 import json
@@ -45,8 +45,8 @@ def test_generate_contract(tmp_path):
         for v in VIEWS:
             vd = sd / f"view_{v:03d}"
             for f in ("gt", "agnostic", "mask", "normal", "depth_sil"):
-                assert (vd / f"{f}.png").exists(), f"{sample_id}/view_{v:03d}/{f}.png eksik"
-        # görüş kameraları birbirinden farklı olmalı (orbit gerçekten dönüyor)
+                assert (vd / f"{f}.png").exists(), f"{sample_id}/view_{v:03d}/{f}.png missing"
+        # the view cameras must differ from one another (the orbit really rotates)
         views = meta["views"]
         assert views["0"] != views["180"]
 
@@ -56,5 +56,5 @@ def test_generate_appends_pairs(tmp_path):
     generate(_dummy_assets(1), tmp_path, num_samples=1, size=SIZE, seed=2, log=lambda *_: None)
     with (tmp_path / "pairs.csv").open() as fh:
         rows = list(csv.reader(fh))
-    assert len(rows) == 3  # tek header + 2 örnek (farklı seed → farklı sample_id)
+    assert len(rows) == 3  # a single header + 2 samples (different seed → different sample_id)
     assert rows[1][0] != rows[2][0]

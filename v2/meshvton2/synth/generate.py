@@ -1,16 +1,16 @@
-"""Sentetik multi-view veri üretici (Faz 3).
+"""Synthetic multi-view data generator (Phase 3).
 
-Her örnek = 1 kimlik (β, poz, kadraj) × 1 giysi × 4 görüş. TÜM koşullama
-build_conditioning ile üretilir — sentetik üretim, parite sözleşmesinin ölçekli
-testidir. Dizin sözleşmesi (plan):
+Each sample = 1 identity (β, pose, framing) × 1 garment × 4 views. ALL conditioning is
+produced with build_conditioning — synthetic generation is the parity contract's test at
+scale. Directory contract (per the plan):
 
     {out}/{sample_id}/
-      meta.json                      # betas, body_pose, garment_id, görüş başına CameraSpec
+      meta.json                      # betas, body_pose, garment_id, CameraSpec per view
       appearance_ref.png
       view_{000,090,180,270}/{gt,agnostic,mask,normal,depth_sil}.png
     {out}/pairs.csv                  # sample_id,garment_id
 
-Reddetme: clearance_ratio > eşik (varsayılan 0.02) → örnek atlanır (drape bozuk).
+Rejection: clearance_ratio > threshold (default 0.02) → the sample is skipped (broken drape).
 """
 
 from __future__ import annotations
@@ -26,22 +26,22 @@ from meshvton2.conditioning.builder import ConditioningBundle, GarmentAsset, Orb
 from meshvton2.synth.bodies import load_identity_bank, sample_identity
 
 VIEWS = (0, 90, 180, 270)
-# Veri sözleşmesi/drape hattı değişince ARTIR — pipeline eski sürüm arşivini tanıyıp siler
-# (v1 damgasız bozuk arşiv, düzeltilmiş koşuya sessizce geri yüklenmişti)
-# v4 (2026-08-09) — "hayalet/şeffaf çıktı" teşhisinin üç veri-tarafı düzeltmesi:
-#   1. GT giysi artık HER ZAMAN gri (eskiden texture'lıysa desenli; ref gri olduğu için
-#      hedef öngörülemez oluyordu → model koşullu ortalamayı, yani solgun lekeyi öğrendi)
-#   2. appearance ref + GT artık GÖLGELİ render (FLAT = gölgesiz düz siluetti; giysinin
-#      formu modele hiç geçmiyordu)
-#   3. hang_pad: kısa süre -0.06 denendi, QA'da giysi koltukaltına kaydı → +0.06'ya
-#      geri alındı (v5). Bkz. builder.DEFAULT_HANG_PAD gerekçesi.
-# v6: kimlik bankası — beden(betas) artık pozla EŞLEŞMİŞ biçimde gerçek kişilerden;
-#     rastgele uç bedenler giysiyi yırtıyordu. + clearance 4mm→8mm.
+# BUMP when the data contract/drape pipeline changes — the pipeline spots an old-version archive and deletes it
+# (an unstamped broken v1 archive had once been silently restored into a fixed run)
+# v4 (2026-08-09) — the three data-side fixes from the "ghost/transparent output" diagnosis:
+#   1. the GT garment is now ALWAYS grey (previously patterned if textured; since the ref was
+#      grey the target was unpredictable → the model learned the conditional mean, a pale smear)
+#   2. the appearance ref + GT are now SHADED renders (FLAT = an unshaded flat silhouette; the
+#      garment's form never reached the model)
+#   3. hang_pad: -0.06 was briefly tried, in QA the garment slid to the armpit → reverted to
+#      +0.06 (v5). See the builder.DEFAULT_HANG_PAD rationale.
+# v6: identity bank — the body (betas) now comes from real people MATCHED with the pose;
+#     random extreme bodies were tearing the garment. + clearance 4mm→8mm.
 DATA_VERSION = "6"
-DEPTH_REJECT = 0.03   # ortalama penetrasyon derinliği [m]: mm=normal temas, 3cm+=yanlış yerleşim
-EXTENT_REJECT = 1.5   # giysi/gövde bbox-diyagonal oranı üst sınırı (patlama kapısı)
-# NOT: "itilen vertex oranı" (clearance_ratio) artık RED kriteri DEĞİL — oturan
-# giyside teması olan vertex çoktur; bozukluk sinyali derinlik + boyut oranıdır.
+DEPTH_REJECT = 0.03   # mean penetration depth [m]: mm=normal contact, 3cm+=wrong placement
+EXTENT_REJECT = 1.5   # upper bound on the garment/body bbox-diagonal ratio (explosion gate)
+# NOTE: the "pushed vertex ratio" (clearance_ratio) is NO LONGER a rejection criterion — a
+# fitted garment has many touching vertices; the corruption signal is depth + size ratio.
 
 
 def _save_png(path: Path, arr: np.ndarray) -> None:
@@ -52,7 +52,7 @@ def _save_png(path: Path, arr: np.ndarray) -> None:
 
 
 def _t2u8(t) -> np.ndarray:
-    """(C,H,W) [-1,1] -> (H,W,C) uint8; tek kanal -> (H,W)."""
+    """(C,H,W) [-1,1] -> (H,W,C) uint8; a single channel -> (H,W)."""
     a = ((t.numpy().transpose(1, 2, 0) + 1) / 2 * 255).round().clip(0, 255).astype(np.uint8)
     return a[..., 0] if a.shape[2] == 1 else a
 
@@ -96,19 +96,19 @@ def generate(
     depth_reject: float = DEPTH_REJECT,
     log=print,
 ) -> dict:
-    """-> {written, rejected, failed}. pairs.csv'ye ekler (append, header'lı ilk yazım)."""
+    """-> {written, rejected, failed}. Appends to pairs.csv (append, header on the first write)."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "DATA_VERSION").write_text(DATA_VERSION)
     rng = np.random.RandomState(seed)
     bank = load_identity_bank(poses_file)
-    # Teşhis: gerçek kimlik bankası mı yoksa fallback mi kullanılıyor, GÖRÜNSÜN
-    # (poz/beden dağılımı sessizce sentetiğe düşerse çıktılar hedef alandan kayar).
+    # Diagnostic: MAKE IT VISIBLE whether the real identity bank or the fallback is in use
+    # (if the pose/body distribution silently drops to synthetic, the outputs drift off-domain).
     if bank is None:
-        log("KİMLİK: fallback A-poz + rastgele beden (--poses verilmedi)")
+        log("IDENTITY: fallback A-pose + random body (--poses not given)")
     else:
-        log(f"KİMLİK: {len(bank['body_pose'])} gerçek kişi; "
-            f"beden(betas) {'GERÇEK (eşleşmiş)' if bank['betas'] is not None else 'rastgele (npz betas yok)'}")
+        log(f"IDENTITY: {len(bank['body_pose'])} real people; "
+            f"body(betas) {'REAL (matched)' if bank['betas'] is not None else 'random (no betas in the npz)'}")
     pairs_path = out_dir / "pairs.csv"
     new_header = not pairs_path.exists()
 
@@ -118,7 +118,7 @@ def generate(
         if new_header:
             wcsv.writerow(["sample_id", "garment_id"])
         for i in range(num_samples):
-            # seed ofseti: paralel işçiler aynı giysi sırasını üretmesin
+            # seed offset: keep parallel workers from producing the same garment order
             asset = garment_assets[(i + seed) % len(garment_assets)]
             params = sample_identity(rng, size, bank)
             sample_id = f"s{seed:03d}_{i:06d}"
@@ -129,14 +129,14 @@ def generate(
                 }
             except Exception as e:
                 failed.append(f"{sample_id}: {e}")
-                log(f"[{i+1}/{num_samples}] HATA {sample_id}: {e}")
+                log(f"[{i+1}/{num_samples}] ERROR {sample_id}: {e}")
                 continue
             meta0 = bundles[VIEWS[0]].meta
             depth = meta0.get("penetration_depth") or 0.0
             er = meta0.get("drape_extent_ratio") or 0.0
             if depth > depth_reject or er > EXTENT_REJECT:
                 rejected += 1
-                log(f"[{i+1}/{num_samples}] RED {sample_id}: derinlik={depth*100:.1f}cm extent={er:.2f}")
+                log(f"[{i+1}/{num_samples}] REJECT {sample_id}: depth={depth*100:.1f}cm extent={er:.2f}")
                 continue
             write_sample(out_dir, sample_id, bundles, params)
             wcsv.writerow([sample_id, asset.garment_id])

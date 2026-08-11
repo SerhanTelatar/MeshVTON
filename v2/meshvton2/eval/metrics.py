@@ -1,10 +1,10 @@
-"""MeshVTON v2 değerlendirme metrikleri.
+"""MeshVTON v2 evaluation metrics.
 
-Tasarım kuralları (v1 dersleri):
-- Bir metrik hesaplanamıyorsa (bağımlılık yok / girdi yok) 0.0 gibi YALAN bir değer değil,
-  None döner; harness None'ları "n/a" olarak raporlar. (v1'de compute_lpips ImportError'da
-  0.0 döndürüyordu — sessiz başarı yanılsaması.)
-- Tüm girdiler (H,W,3) uint8 RGB, maskeler (H,W) bool; dönüşümler utils.image_utils'te.
+Design rules (v1 lessons):
+- If a metric cannot be computed (missing dependency / missing input) it returns None, not a
+  LIE like 0.0; the harness reports None as "n/a". (In v1 compute_lpips returned 0.0 on an
+  ImportError — a silent illusion of success.)
+- All inputs are (H,W,3) uint8 RGB, masks are (H,W) bool; the conversions live in utils.image_utils.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ def _as_bool_mask(mask: np.ndarray) -> np.ndarray:
 
 
 def compute_ssim(pred: np.ndarray, target: np.ndarray, mask: np.ndarray | None = None) -> float:
-    """SSIM; mask verilirse SSIM haritasının maske içi ortalaması (bölge-SSIM)."""
+    """SSIM; if a mask is given, the mean of the SSIM map inside the mask (region SSIM)."""
     from skimage.metrics import structural_similarity
 
     if mask is None:
@@ -49,8 +49,8 @@ def compute_psnr(pred: np.ndarray, target: np.ndarray, mask: np.ndarray | None =
 
 
 def compute_lpips(pred: np.ndarray, target: np.ndarray, mask: np.ndarray | None = None) -> float | None:
-    """LPIPS (AlexNet). Maske verilirse maske DIŞI her iki görüntüde nötr griye
-    sabitlenir → metrik yalnız bölgeden sinyal alır. lpips kurulu değilse None."""
+    """LPIPS (AlexNet). If a mask is given, everything OUTSIDE it is pinned to neutral grey in
+    both images → the metric only picks up signal from the region. None if lpips is not installed."""
     global _LPIPS_MODEL, _LPIPS_UNAVAILABLE
     if _LPIPS_UNAVAILABLE:
         return None
@@ -79,8 +79,8 @@ def compute_lpips(pred: np.ndarray, target: np.ndarray, mask: np.ndarray | None 
 
 
 def garment_delta_e(pred: np.ndarray, pred_mask: np.ndarray, ref: np.ndarray, ref_mask: np.ndarray | None = None) -> float | None:
-    """Giysi renk sadakati: pred'in maske-içi ortalama Lab rengi ile referansın
-    (appearance ref, opsiyonel ön-plan maskeli) ortalama Lab rengi arasında CIEDE2000."""
+    """Garment color fidelity: CIEDE2000 between pred's mean in-mask Lab color and the
+    reference's mean Lab color (the appearance ref, optionally foreground-masked)."""
     from skimage.color import deltaE_ciede2000, rgb2lab
 
     pm = _as_bool_mask(pred_mask)
@@ -89,7 +89,7 @@ def garment_delta_e(pred: np.ndarray, pred_mask: np.ndarray, ref: np.ndarray, re
     if ref_mask is not None:
         rm = _as_bool_mask(ref_mask)
     else:
-        # Referansta ön planı kabaca ayıkla: saf-beyaza yakın arka planı at.
+        # Roughly isolate the foreground in the reference: drop the near-pure-white background.
         rm = ~np.all(ref > 245, axis=-1)
     if not rm.any():
         return None
@@ -109,7 +109,7 @@ def silhouette_iou(mask_a: np.ndarray, mask_b: np.ndarray) -> float | None:
 
 
 def outside_mask_preservation(pred: np.ndarray, person: np.ndarray, inpaint_mask: np.ndarray) -> dict:
-    """Identity koruması: inpaint maskesi DIŞINDA pred, orijinal kişiyle aynı kalmalı."""
+    """Identity preservation: OUTSIDE the inpaint mask, pred must stay identical to the original person."""
     outside = ~_as_bool_mask(inpaint_mask)
     return {
         "outside_mask_ssim": compute_ssim(pred, person, mask=outside),

@@ -2,12 +2,12 @@ import os
 import sys
 from pathlib import Path
 
-# v2 paketi repo-kökünden bağımsız import edilebilsin (v1 src/ ile asla karışmaz).
+# So the v2 package can be imported independently of the repo root (never mixed with v1 src/).
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-# 3D bağımlılıkları olmayan makinede builder testleri stub'la koşar; Colab'da
-# (pyrender+smplx kurulu) aynı testler GERÇEK hattı kullanır. Üretim scriptleri
-# assert_real_impl() ile stub'ı reddeder — bu yalnız test kolaylığıdır.
+# On a machine without the 3D dependencies the builder tests run against the stub; on Colab
+# (with pyrender+smplx installed) the same tests use the REAL pipeline. Production scripts
+# reject the stub via assert_real_impl() — this is only a test convenience.
 try:
     import pyrender  # noqa: F401
     import smplx  # noqa: F401

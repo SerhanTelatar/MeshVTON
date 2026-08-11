@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Faz 4 çıkış kapısı — eğitilmiş checkpoint'le golden set değerlendirmesi + ablation.
+"""Phase 4 exit gate — golden set evaluation with a trained checkpoint + ablation.
 
-İki koşu yapar ve karşılaştırır:
-  1. kontrol AÇIK  (control_scale=1.0)
-  2. kontrol KAPALI (control_scale=0.0 — zero-init sayesinde bit-eş stok davranış)
+It runs and compares two passes:
+  1. control ON  (control_scale=1.0)
+  2. control OFF (control_scale=0.0 — bit-identical stock behaviour thanks to zero-init)
 
-KAPI (v1 FAZ C dersinin otomatik testi): AÇIK, KAPALI'dan kötüyse eğitim geometriyi
-öğrenememiş demektir → Aşama 2'ye geçme, teşhis et (ilk çare: ref_dropout artır).
+GATE (the automated test of the v1 PHASE C lesson): if ON is worse than OFF, training did not
+learn the geometry → do not move to Stage 2, diagnose it (first remedy: raise ref_dropout).
 
-Kullanım (Colab, A100):
+Usage (Colab, A100):
   python v2/scripts/eval_checkpoint.py --checkpoint <Drive>/stage1/latest-ckpt.pt \\
       --idm-repo /content/IDM-VTON [--limit 10] [--angles 0]
 """
@@ -42,8 +42,8 @@ ATR_GARMENT = (4, 7)
 
 
 def _save_predsil(prep, stem) -> None:
-    """ÜRETİLEN görüntünün giysi bölgesini parser'la çıkar → geo_iou'nun girdisi.
-    (Koşullama silüetini koşullamayla kıyaslamak ablation'da sabit çıkıyordu — bug'dı.)"""
+    """Extract the garment region of the GENERATED image with the parser → geo_iou's input.
+    (Comparing the conditioning silhouette against the conditioning came out constant in the ablation — a bug.)"""
     import cv2
 
     try:
@@ -53,7 +53,7 @@ def _save_predsil(prep, stem) -> None:
         m = np.isin(cv2.resize(pp.parse, (w, h), interpolation=cv2.INTER_NEAREST), ATR_GARMENT)
         Image.fromarray((m * 255).astype("uint8")).save(f"{stem}.predsil.png")
     except Exception as e:
-        print(f"  predsil atlandı ({stem.name}): {e}", file=sys.stderr)
+        print(f"  predsil skipped ({stem.name}): {e}", file=sys.stderr)
 
 
 def run_variant(sampler, combos, ctx, control_scale: float, tag: str) -> dict:
@@ -72,7 +72,7 @@ def run_variant(sampler, combos, ctx, control_scale: float, tag: str) -> dict:
                 Image.fromarray((bundle.inpaint_mask.numpy()[0] * 255).astype("uint8")).save(f"{stem}.mask.png")
                 sil = (bundle.control_depth_sil[2].numpy() > 0).astype("uint8") * 255
                 Image.fromarray(sil).save(f"{stem}.sil.png")
-            if not Path(f"{stem}.predsil.png").exists():  # mevcut pred'lere de eklenir (ucuz)
+            if not Path(f"{stem}.predsil.png").exists():  # added to existing preds too (cheap)
                 _save_predsil(prep, stem)
         print(f"[{tag} {i+1}/{len(combos)}] {person.id}×{garment.id}")
     summary = harness.evaluate(ctx["manifest"], pred_dir, cfg["pred_pattern"])
@@ -84,25 +84,25 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--checkpoint", required=True)
     ap.add_argument("--idm-repo", type=Path, required=True)
-    ap.add_argument("--limit", type=int, default=10, help="ilk N kombo")
+    ap.add_argument("--limit", type=int, default=10, help="first N combos")
     ap.add_argument("--angles", type=int, nargs="+", default=[0])
     ap.add_argument("--steps", type=int, default=28)
-    # Askı payı: FOTOĞRAF yolunun kalibre edilmiş değeri (builder.PHOTO_HANG_PAD).
-    # builder'ın +0.06'sı SENTETİK yol içindir; fotoğrafta giysiyi ~21 puan yukarı
-    # asıyordu (mesh↔parser IoU 0.295 → -0.12'de 0.480, yerleşim IoU 0.58 → 0.68).
-    # Eski davranışı yeniden ölçmek için: --hang-pad 0.06
+    # Hang pad: the calibrated value for the PHOTO path (builder.PHOTO_HANG_PAD).
+    # The builder's +0.06 is for the SYNTHETIC path; on photos it hung the garment ~21 points
+    # too high (mesh↔parser IoU 0.295 → 0.480 at -0.12, placement IoU 0.58 → 0.68).
+    # To re-measure the old behaviour: --hang-pad 0.06
     ap.add_argument("--hang-pad", type=float, default=PHOTO_HANG_PAD,
-                    help=f"giysi askı payı [m]; varsayılan {PHOTO_HANG_PAD} (foto yolu kalibrasyonu)")
-    # Giysi ölçeği: CLOTH3D mesh'leri HMR2 bedenlerine göre sistematik küçük
-    # (calibrate_scale.py: mesh↔parser IoU 1.00'da 0.481, 1.25'te 0.555).
+                    help=f"garment hang pad [m]; default {PHOTO_HANG_PAD} (photo path calibration)")
+    # Garment scale: CLOTH3D meshes are systematically small relative to HMR2 bodies
+    # (calibrate_scale.py: mesh↔parser IoU 0.481 at 1.00, 0.555 at 1.25).
     ap.add_argument("--garment-scale", type=float, default=PHOTO_GARMENT_SCALE,
-                    help=f"giysi ölçeği; varsayılan {PHOTO_GARMENT_SCALE} (foto yolu kalibrasyonu)")
-    # use_texture: KURAL gereği varsayılan False. TEK meşru kullanımı 2026-07-06
-    # texture'lı checkpoint'i (stage1_july) kendi rejiminde ölçmek (bkz. builder.py notu).
+                    help=f"garment scale; default {PHOTO_GARMENT_SCALE} (photo path calibration)")
+    # use_texture: False by default per the RULE. Its ONLY legitimate use is measuring the
+    # 2026-07-06 textured checkpoint (stage1_july) in its own regime (see the builder.py note).
     ap.add_argument("--use-texture", action="store_true",
-                    help="appearance ref TEXTURE'LI olsun (yalnız Temmuz checkpoint'i için)")
+                    help="make the appearance ref TEXTURED (only for the July checkpoint)")
     ap.add_argument("--tag-suffix", default="",
-                    help="çıktı klasör/rapor adına ek (ör. _hp-012) — koşuları ezmemek için")
+                    help="suffix for the output folder/report name (e.g. _hp-012) — so runs do not overwrite each other")
     args = ap.parse_args()
 
     assert_real_impl()
@@ -113,7 +113,7 @@ def main() -> int:
     garments_root = REPO / base["paths"]["garments_root"]
     out_root = REPO / base["paths"]["eval_results"]
 
-    # Koşullamaları BİR kez kur (iki varyant aynı bundle'ları kullanır — adil ablation)
+    # Build the conditionings ONCE (both variants use the same bundles — a fair ablation)
     prep = PersonPreprocessor(args.idm_repo)
     hmr2 = build_hmr2_backend()
     by_pid = {p.id: p for p in manifest.persons}
@@ -123,9 +123,9 @@ def main() -> int:
         person, garment = by_pid[combo.person_id], by_gid[combo.garment_id]
         try:
             pp = prep.process(manifest.root / person.image, size=size)
-            # person_square_bbox ŞART: varsayılan tam-kare bbox gövdeyi görüntü
-            # merkezine projekte eder (off-center kişide mesh kayar) — hizalama
-            # düzeltmesi eval'de kullanılmıyordu (2026-08-09).
+            # person_square_bbox is REQUIRED: the default full-frame bbox projects the body to
+            # the image centre (the mesh shifts for an off-centre person) — this alignment fix
+            # was not being used in eval (2026-08-09).
             params = hmr2(pp.image, bbox=person_square_bbox(pp))
             asset = load_garment_asset(
                 garments_root / garment.mesh,
@@ -145,38 +145,38 @@ def main() -> int:
             }
             combos.append((person, garment, bundles))
         except Exception as e:
-            print(f"ATLA {person.id}×{garment.id}: {e}", file=sys.stderr)
+            print(f"SKIP {person.id}×{garment.id}: {e}", file=sys.stderr)
     if not combos:
-        raise SystemExit("HATA: hiç kombo kurulamadı")
+        raise SystemExit("ERROR: no combo could be built")
 
     sampler = FluxTryOnSampler(base["model"]["flux_fill_repo"], checkpoint=args.checkpoint,
                                prompt=base["model"]["prompt"])
     ctx = {"cfg": cfg, "out_root": out_root, "manifest": manifest, "angles": args.angles,
            "prep": prep}
-    # tag-suffix: farklı hang_pad koşuları birbirinin PNG'lerini ezmesin (run_variant
-    # mevcut dosyayı atlar — aynı klasöre yazılsa eski hizalama sessizce korunurdu)
+    # tag-suffix: keep runs with different hang_pad from overwriting each other's PNGs (run_variant
+    # skips an existing file — written to the same folder, the old alignment would silently survive)
     s_on = run_variant(sampler, combos, ctx, 1.0, f"control_on{args.tag_suffix}")
     s_off = run_variant(sampler, combos, ctx, 0.0, f"control_off{args.tag_suffix}")
 
-    # KAPI: geo_iou = ÇIKTIDAKİ giysi bölgesi (parse) vs hedef silüet — AÇIK >= KAPALI
+    # GATE: geo_iou = the garment region IN THE OUTPUT (parse) vs the target silhouette — ON >= OFF
     get = lambda s, k: (s["overall"].get(k) or {}).get("mean")
     geo_on, geo_off = get(s_on, "geo_iou"), get(s_off, "geo_iou")
     de_on, de_off = get(s_on, "garment_delta_e"), get(s_off, "garment_delta_e")
-    print(f"\n=== ABLATION KAPISI ===")
-    print(f"geo_iou (çıktı-silüeti vs hedef): AÇIK={geo_on} KAPALI={geo_off} (yüksek iyi)")
-    print(f"garment_delta_e                 : AÇIK={de_on} KAPALI={de_off} (düşük iyi)")
+    print(f"\n=== ABLATION GATE ===")
+    print(f"geo_iou (output silhouette vs target): ON={geo_on} OFF={geo_off} (higher is better)")
+    print(f"garment_delta_e                      : ON={de_on} OFF={de_off} (lower is better)")
     if geo_on is not None and geo_off is not None:
         if geo_on < geo_off - 0.01:
-            print("KAPI KALDI: kontrol AÇIK geometriyi bozuyor — v1 FAZ C senaryosu. Aşama 2'ye"
-                  " GEÇME; çare sırası: ref_dropout artır (0.1→0.2) → devam eğitimi → FluxControlNet.")
+            print("GATE FAILED: control ON breaks the geometry — the v1 PHASE C scenario. Do NOT move"
+                  " to Stage 2; remedies in order: raise ref_dropout (0.1→0.2) → continue training → FluxControlNet.")
             return 1
-        print(f"KAPI GEÇTİ (geo_iou farkı: {geo_on - geo_off:+.4f}).")
+        print(f"GATE PASSED (geo_iou difference: {geo_on - geo_off:+.4f}).")
         return 0
-    print("UYARI: geo_iou hesaplanamadı (predsil eksik) — kapı ΔE'ye göre değerlendirildi.")
+    print("WARNING: geo_iou could not be computed (predsil missing) — the gate was judged on ΔE.")
     if de_on is not None and de_off is not None and de_on > de_off + 1.0:
-        print("KAPI KALDI (ΔE): kontrol AÇIK renk sadakatini bozuyor.")
+        print("GATE FAILED (ΔE): control ON breaks color fidelity.")
         return 1
-    print("KAPI GEÇTİ (ΔE bazlı, zayıf sinyal).")
+    print("GATE PASSED (ΔE based, weak signal).")
     return 0
 
 

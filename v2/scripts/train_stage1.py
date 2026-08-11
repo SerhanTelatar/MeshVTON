@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Aşama 1 eğitimi — tek görüş (Colab, büyük GPU: L4/A100; T4'e sığmaz).
+"""Stage 1 training — single view (Colab, large GPU: L4/A100; does not fit on a T4).
 
-Kullanım:
-  python v2/scripts/train_stage1.py                     # config varsayılanları
-  python v2/scripts/train_stage1.py --smoke             # 10 adımlık duman testi
+Usage:
+  python v2/scripts/train_stage1.py                     # config defaults
+  python v2/scripts/train_stage1.py --smoke             # a 10-step smoke test
   python v2/scripts/train_stage1.py --max-steps 5000    # override
 
-Veri önkoşulları:
-  - sentetik: v2/data/synth (generate_synthetic.py)
-  - gerçek (opsiyonel ama önerilir): v2/data/vitonhd_items (preprocess_vitonhd.py)
-Resume otomatiktir (out_dir/latest.pt varsa kaldığı adımdan devam eder).
+Data prerequisites:
+  - synthetic: v2/data/synth (generate_synthetic.py)
+  - real (optional but recommended): v2/data/vitonhd_items (preprocess_vitonhd.py)
+Resume is automatic (if out_dir/latest.pt exists it continues from that step).
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ import os
 import sys
 from pathlib import Path
 
-# uzun dizilerde bellek parçalanmasına karşı (OOM sınırında rahatlatır)
+# guards against memory fragmentation on long sequences (helps at the OOM edge)
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 REPO = Path(__file__).resolve().parents[2]
@@ -38,22 +38,22 @@ def build_dataset(cfg: dict, size: tuple[int, int]):
     synth_root = REPO / cfg["data"]["synth_root"]
     real_root = REPO / cfg["data"]["real_root"]
     synth_items = discover_synth_items(synth_root)
-    # latent önbelleği: TÜM öğelerde varsa VAE'siz hızlı yol (precompute_latents.py)
+    # latent cache: if EVERY item has one, take the VAE-free fast path (precompute_latents.py)
     use_latents = all((it.item_dir / "latents.pt").exists() for it in synth_items[:50]) and \
         (synth_items[0].item_dir / "latents.pt").exists()
     synth = SingleViewDataset(synth_items, size=size, use_latents=use_latents)
-    print(f"sentetik: {len(synth)} öğe ({synth_root}); latent önbelleği: {'AÇIK' if use_latents else 'kapalı'}")
+    print(f"synthetic: {len(synth)} items ({synth_root}); latent cache: {'ON' if use_latents else 'off'}")
     if real_root.exists():
         real_items = discover_flat_items(real_root)
         if use_latents and not (real_items[0].item_dir / "latents.pt").exists():
-            use_latents = False  # karışık mod olmaz; ikisi de latent'li olmalı
+            use_latents = False  # no mixed mode; both sides must have latents
             synth = SingleViewDataset(synth_items, size=size, use_latents=False)
-            print("NOT: gerçek veride latent yok — iki taraf da piksel modunda")
+            print("NOTE: no latents in the real data — both sides run in pixel mode")
         real = SingleViewDataset(real_items, size=size, use_latents=use_latents)
-        print(f"gerçek: {len(real)} öğe; karışım oranı {cfg['data']['real_ratio']}")
+        print(f"real: {len(real)} items; mix ratio {cfg['data']['real_ratio']}")
         return MixedDataset(real, synth, primary_ratio=cfg["data"]["real_ratio"])
-    print("UYARI: gerçek veri yok — sentetik-only eğitim (domain-gap riski; "
-          "preprocess_vitonhd.py koşulması önerilir)", file=sys.stderr)
+    print("WARNING: no real data — synthetic-only training (domain-gap risk; "
+          "running preprocess_vitonhd.py is recommended)", file=sys.stderr)
     return synth
 
 
@@ -62,8 +62,8 @@ def main() -> int:
     ap.add_argument("--config", type=Path, default=REPO / "v2/configs/stage1_singleview.yaml")
     ap.add_argument("--max-steps", type=int, default=None)
     ap.add_argument("--batch-size", type=int, default=None)
-    ap.add_argument("--out-dir", type=Path, default=None, help="checkpoint dizini (örn. Drive yolu)")
-    ap.add_argument("--smoke", action="store_true", help="10 adım, ckpt yok — kurulum doğrulama")
+    ap.add_argument("--out-dir", type=Path, default=None, help="checkpoint directory (e.g. a Drive path)")
+    ap.add_argument("--smoke", action="store_true", help="10 steps, no ckpt — setup validation")
     args = ap.parse_args()
 
     base = yaml.safe_load((REPO / "v2/configs/base.yaml").read_text())
@@ -108,9 +108,9 @@ def main() -> int:
     loop.run(loader)
     if not args.smoke:
         loop.save(Path(train_cfg.out_dir) / "final.pt")
-        print(f"bitti — checkpoint: {train_cfg.out_dir}/final.pt")
+        print(f"finished — checkpoint: {train_cfg.out_dir}/final.pt")
     else:
-        print("duman testi OK (10 adım, loss yukarıda)")
+        print("smoke test OK (10 steps, loss above)")
     return 0
 
 

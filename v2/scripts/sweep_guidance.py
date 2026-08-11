@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-"""GUIDANCE taraması — solgun/yarı saydam çıktının ucuz çaresi var mı?
+"""GUIDANCE sweep — is there a cheap cure for the washed-out/semi-transparent output?
 
-Bulgu (2026-08-10): kalibrasyon (hang -0.12, ölçek 1.25) sonrası yerleşim düzeldi
-ama çıktı hâlâ "kumaş gibi" durmuyor — düz gri kütle, kıvrım/gölge yok. Sebep
-eğitim bütçesi: 1000 adımda akış-eşleme kaybı KOŞULLU ORTALAMAYA yakınsıyor,
-o da tüm olası kıvrım desenlerinin ortalaması = düz leke. Sentetik GT'de kıvrım
-VAR (gölgeli gri render), model henüz üretmiyor.
+Finding (2026-08-10): after calibration (hang -0.12, scale 1.25) the placement improved but
+the output still does not read as "cloth" — a flat grey mass, no folds/shading. The cause is
+the training budget: at 1000 steps the flow-matching loss converges to the CONDITIONAL MEAN,
+which is the average of all possible fold patterns = a flat smear. The folds ARE in the
+synthetic GT (a shaded grey render), the model just does not produce them yet.
 
-Eğitmeden denenecek tek kol: FLUX Fill guidance-damıtılmış; yüksek guidance
-(3.5-30) sadakat/doygunluğu artırır (bkz. flux_tryon.py FluxTryOnSampler.sample
-docstring: "solgunluk çaresi"). Şimdiye kadar hep 1.0 (eğitimdeki değer) kullanıldı.
+The only lever available without training: FLUX Fill is guidance-distilled; high guidance
+(3.5-30) raises fidelity/saturation (see the flux_tryon.py FluxTryOnSampler.sample docstring:
+"the cure for washed-out output"). So far only 1.0 (the training value) has been used.
 
-Notebook'tan BAĞIMSIZ: kendi prep/hmr2/sampler'ını kurar.
+INDEPENDENT of the notebook: it builds its own prep/hmr2/sampler.
 
-Kullanım:
+Usage:
   python v2/scripts/sweep_guidance.py --checkpoint <Drive>/stage1/final.pt \\
       --idm-repo /content/IDM-VTON [--person 00000_00] [--garment upper_body__00047_Top]
       [--guidance 1.0 3.5 7.0 15.0] [--steps 28]
@@ -45,15 +45,15 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--checkpoint", required=True)
     ap.add_argument("--idm-repo", type=Path, required=True)
-    ap.add_argument("--person", default=None, help="varsayılan: manifest'teki ilk kişi")
-    ap.add_argument("--garment", default=None, help="varsayılan: manifest'teki ilk giysi")
+    ap.add_argument("--person", default=None, help="default: the first person in the manifest")
+    ap.add_argument("--garment", default=None, help="default: the first garment in the manifest")
     ap.add_argument("--guidance", type=float, nargs="+", default=[1.0, 3.5, 7.0, 15.0])
     ap.add_argument("--steps", type=int, default=28)
     ap.add_argument("--seed", type=int, default=0)
-    # HAM çıktı = kompozit ÖNCESİ VAE sonucu. Solgunluk/saydamlık modelin
-    # üretiminden mi, maske dışı geri-yapıştırmanın kenar yumuşatmasından mı
-    # geliyor? (flux_tryon.sample docstring'indeki teşhis kolu.)
-    ap.add_argument("--raw", action="store_true", help="kompozit öncesi ham çıktıyı da kaydet")
+    # RAW output = the VAE result BEFORE compositing. Does the washed-out/transparent look
+    # come from the model's generation or from the edge feathering of the paste-back
+    # outside the mask? (The diagnostic lever in the flux_tryon.sample docstring.)
+    ap.add_argument("--raw", action="store_true", help="also save the raw output before compositing")
     ap.add_argument("--hang-pad", type=float, default=PHOTO_HANG_PAD)
     ap.add_argument("--garment-scale", type=float, default=PHOTO_GARMENT_SCALE)
     args = ap.parse_args()
@@ -82,14 +82,14 @@ def main() -> int:
         texture_path=garments_root / garment.texture if garment.texture else None,
         garment_id=garment.id, allow_untextured=True,
     )
-    # Koşullama BİR kez: tarama boyunca tek değişken guidance olsun
+    # Conditioning ONCE: guidance must be the only variable across the sweep
     bundle = build_conditioning(pp.image, params, asset, PhotoView(), size=size,
                                 person_prep=pp, hang_pad=args.hang_pad,
                                 garment_scale=args.garment_scale)
 
     sampler = FluxTryOnSampler(base["model"]["flux_fill_repo"], checkpoint=args.checkpoint,
                                prompt=base["model"]["prompt"])
-    print(f"kişi={pid} giysi={gid} hang={args.hang_pad:+.2f} ölçek={args.garment_scale:.2f} "
+    print(f"person={pid} garment={gid} hang={args.hang_pad:+.2f} scale={args.garment_scale:.2f} "
           f"seed={args.seed}\n")
 
     outs = []
@@ -101,15 +101,15 @@ def main() -> int:
             Image.fromarray(raw).save(out_dir / f"{pid}__{gid}__g{g:g}.RAW.png")
         fn = out_dir / f"{pid}__{gid}__g{g:g}.png"
         Image.fromarray(img).save(fn)
-        # Kontrast/doygunluk vekili: maske içi std yükseliyorsa doku BELİRİYOR demektir
+        # Contrast/saturation proxy: if the in-mask std rises, texture is EMERGING
         m = bundle.inpaint_mask.numpy()[0] > 0.5
         std = float(np.asarray(img, np.float32)[m].std())
         outs.append((g, img, std))
         extra = ""
         if raw is not None:
             rstd = float(np.asarray(raw, np.float32)[m].std())
-            extra = f"   HAM std={rstd:6.2f}"
-        print(f"  guidance={g:>5.1f} → {fn.name}   maske-içi std={std:6.2f}{extra}")
+            extra = f"   RAW std={rstd:6.2f}"
+        print(f"  guidance={g:>5.1f} → {fn.name}   in-mask std={std:6.2f}{extra}")
 
     h = round(240 * size[0] / size[1])
     strip = Image.new("RGB", (240 * len(outs), h), "white")
@@ -119,10 +119,10 @@ def main() -> int:
     strip.save(sp)
 
     best = max(outs, key=lambda r: r[2])
-    print(f"\nŞerit: {sp}  (soldan sağa: {', '.join(f'g={g:g}' for g, *_ in outs)})")
-    print(f"EN YÜKSEK DOKU (maske-içi std): guidance={best[0]:g} → {best[2]:.2f}")
-    print("NOT: std yalnız VEKİL bir ölçüt — yüksek std bazen gürültü/artefakt da olabilir.")
-    print("     Kararı ŞERİDE BAKARAK verin; kumaş kıvrımı mı, bozulma mı ayırt edin.")
+    print(f"\nStrip: {sp}  (left to right: {', '.join(f'g={g:g}' for g, *_ in outs)})")
+    print(f"HIGHEST TEXTURE (in-mask std): guidance={best[0]:g} → {best[2]:.2f}")
+    print("NOTE: std is only a PROXY — a high std can also be noise/artifacts.")
+    print("      Make the call BY LOOKING AT THE STRIP; tell cloth folds apart from corruption.")
     return 0
 
 

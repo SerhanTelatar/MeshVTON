@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Faz 2 çıkış kapısı — kamera doğrulama (Colab, GPU).
+"""Phase 2 exit gate — camera validation (Colab, GPU).
 
-Golden set kişileri için: HMR2 → SMPL-X → pred_cam kamerasıyla gövde silüeti
-render → parser'ın kişi maskesiyle IoU. Kapı: ortalama IoU >= 0.70.
-Her kişi için overlay PNG yazar (yeşil=parser, kırmızı=SMPL-X reprojeksiyon,
-sarı=kesişim) — hizasızlık gözle anında görünür.
+For the golden set people: HMR2 → SMPL-X → render the body silhouette with the pred_cam
+camera → IoU against the parser's person mask. Gate: mean IoU >= 0.70.
+It writes an overlay PNG per person (green=parser, red=SMPL-X reprojection,
+yellow=intersection) — misalignment is immediately visible.
 
-Kullanım:
+Usage:
   python v2/scripts/validate_camera.py --idm-repo /content/IDM-VTON [--limit 5]
 
-Gereksinim: 4D-Humans (pip install git+https://github.com/shubham-goel/4D-Humans.git)
+Requirements: 4D-Humans (pip install git+https://github.com/shubham-goel/4D-Humans.git)
 + smplx + SMPLX_MODEL_DIR + IDM-VTON preprocess (parsing onnx).
 """
 
@@ -38,9 +38,9 @@ IOU_GATE = 0.70
 
 def overlay(person: np.ndarray, parse_mask: np.ndarray, body_mask: np.ndarray) -> np.ndarray:
     out = (person * 0.45).astype(np.uint8)
-    out[parse_mask & ~body_mask] = (40, 200, 40)    # yalnız parser: yeşil
-    out[body_mask & ~parse_mask] = (220, 50, 50)    # yalnız SMPL-X: kırmızı
-    out[parse_mask & body_mask] = (230, 220, 60)    # kesişim: sarı
+    out[parse_mask & ~body_mask] = (40, 200, 40)    # parser only: green
+    out[body_mask & ~parse_mask] = (220, 50, 50)    # SMPL-X only: red
+    out[parse_mask & body_mask] = (230, 220, 60)    # intersection: yellow
     return out
 
 
@@ -67,11 +67,11 @@ def main() -> int:
     ious = []
     for i, person in enumerate(persons):
         pp = prep.process(manifest.root / person.image, size=size)
-        params = hmr2(pp.image, bbox=person_square_bbox(pp))  # kişi-merkezli kare (hizalama)
+        params = hmr2(pp.image, bbox=person_square_bbox(pp))  # person-centred square (alignment)
         body = body_model(params)
         cam = photo_camera(params, size)
         body_mask = render_body_mask(body["verts"], body["faces"], cam, size=size)
-        # parser kişi maskesi: arka plan(0) dışı her etiket
+        # the parser's person mask: every label other than background(0)
         parse_full = np.asarray(
             Image.fromarray(pp.parse).resize((size[1], size[0]), Image.NEAREST)
         )
@@ -85,9 +85,9 @@ def main() -> int:
         print(f"[{i+1}/{len(persons)}] {person.id}: IoU={iou:.3f}")
 
     mean_iou = float(np.mean(ious))
-    verdict = "GEÇTİ" if mean_iou >= IOU_GATE else "KALDI"
-    print(f"\nOrtalama IoU = {mean_iou:.3f} (kapı {IOU_GATE}) → {verdict}")
-    print(f"Overlay'ler: {out_dir} (yeşil=parser, kırmızı=SMPL-X, sarı=kesişim)")
+    verdict = "PASSED" if mean_iou >= IOU_GATE else "FAILED"
+    print(f"\nMean IoU = {mean_iou:.3f} (gate {IOU_GATE}) → {verdict}")
+    print(f"Overlays: {out_dir} (green=parser, red=SMPL-X, yellow=intersection)")
     return 0 if mean_iou >= IOU_GATE else 1
 
 

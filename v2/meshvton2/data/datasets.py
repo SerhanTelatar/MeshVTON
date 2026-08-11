@@ -1,7 +1,7 @@
-"""Eğitim dataset'leri: tek-görüş (Aşama 1), 4-görüş demet (Aşama 2), karışım.
+"""Training datasets: single view (Stage 1), 4-view bundle (Stage 2), and a mix.
 
-Karışım oranı (gerçek:sentetik ≈ 70:30) domain-gap sigortasıdır; oran config'ten
-gelir ve deterministiktir (aynı seed → aynı sıra; Colab resume güvenli).
+The mix ratio (real:synthetic ≈ 70:30) is the domain-gap insurance; the ratio comes from the
+config and is deterministic (same seed → same order; safe for a Colab resume).
 """
 
 from __future__ import annotations
@@ -15,12 +15,12 @@ from meshvton2.data.items import TrainItem, load_item
 
 
 class SingleViewDataset(Dataset):
-    """(örnek, görüş) başına bir öğe — Aşama 1. use_latents: VAE'siz hızlı yol."""
+    """One item per (sample, view) — Stage 1. use_latents: the VAE-free fast path."""
 
     def __init__(self, items: list[TrainItem], size: tuple[int, int] | None = None,
                  use_latents: bool = False):
         if not items:
-            raise ValueError("Boş dataset")
+            raise ValueError("Empty dataset")
         self.items = items
         self.size = size
         self.use_latents = use_latents
@@ -33,15 +33,15 @@ class SingleViewDataset(Dataset):
 
 
 class BundleDataset(Dataset):
-    """Örnek başına TÜM görüşler stack'li — Aşama 2 (görüşler aynı batch'te).
-    items_by_sample: her örnek için görüş-sıralı TrainItem listesi."""
+    """ALL views stacked per sample — Stage 2 (the views land in the same batch).
+    items_by_sample: a view-ordered TrainItem list for each sample."""
 
     def __init__(self, items_by_sample: list[list[TrainItem]], size=None):
         if not items_by_sample:
-            raise ValueError("Boş dataset")
+            raise ValueError("Empty dataset")
         n = len(items_by_sample[0])
         if any(len(g) != n for g in items_by_sample):
-            raise ValueError("Tüm örneklerde aynı görüş sayısı olmalı")
+            raise ValueError("Every sample must have the same number of views")
         self.groups = items_by_sample
         self.size = size
 
@@ -54,13 +54,13 @@ class BundleDataset(Dataset):
 
 
 class MixedDataset(Dataset):
-    """İki dataset'i deterministik oranla karıştırır. __len__ = steps_per_epoch;
-    i'inci öğenin kaynağı hash(i,seed)'den — resume'da sıra değişmez."""
+    """Mixes two datasets at a deterministic ratio. __len__ = steps_per_epoch;
+    the source of item i comes from hash(i,seed) — the order does not change on resume."""
 
     def __init__(self, primary: Dataset, secondary: Dataset, *, primary_ratio: float = 0.7,
                  length: int | None = None, seed: int = 0):
         if not 0.0 < primary_ratio < 1.0:
-            raise ValueError("primary_ratio (0,1) aralığında olmalı")
+            raise ValueError("primary_ratio must be in the (0,1) range")
         self.a, self.b = primary, secondary
         self.ratio = primary_ratio
         self.length = length or (len(primary) + len(secondary))

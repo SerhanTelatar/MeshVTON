@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
-"""YERLEŞİM metriği — üretilen giysi GERÇEKTEN gövdeye oturmuş mu?
+"""PLACEMENT metric — does the generated garment REALLY sit on the body?
 
-Neden gerekli (2026-08-10 bulgusu): harness'taki `geo_iou` çıktıyı, koşullama
-olarak VERDİĞİMİZ silüetle kıyaslar. Yani ölçtüğü şey "sonuç doğru mu" değil,
-"model verdiğim silüeti takip etti mi". Silüeti yanlış yere (yüzün üstüne)
-koyarsak model oraya çizer ve geo_iou yine yüksek çıkar — metrik hedefin
-kendisinin bozuk olduğunu GÖREMEZ. Askı düzeltmesi (hang_pad -0.12) mesh↔parser
-hizasını 0.295→0.480 yükselttiği hâlde geo_iou'nun düşmesi tam olarak budur.
+Why it is needed (the 2026-08-10 finding): the harness's `geo_iou` compares the output
+against the silhouette WE GAVE as conditioning. So what it measures is not "is the result
+correct" but "did the model follow the silhouette I gave it". If we put the silhouette in
+the wrong place (over the face) the model draws there and geo_iou still comes out high —
+the metric CANNOT SEE that the target itself is broken. That is exactly why geo_iou dropped
+while the hang fix (hang_pad -0.12) raised the mesh↔parser alignment from 0.295 to 0.480.
 
-Bu script bağımsız bir referans kullanır: kişinin ÜZERİNDEKİ gerçek giysinin
-parser maskesi. Üretilen giysi bölgesi oraya ne kadar oturuyor?
+This script uses an independent reference: the parser mask of the real garment the person is
+WEARING. How well does the generated garment region sit on it?
   placement_iou = IoU(predsil, parser_worn_mask)
 
-Kesim farkları yüzünden 1.0'a çıkamaz (farklı giysi mesh'i giydiriyoruz), ama
-koşular ARASINDA kıyaslanabilir — hangi hang_pad daha gerçekçi yerleştiriyor.
+It cannot reach 1.0 because of cut differences (we are dressing a different garment mesh), but
+it is comparable ACROSS runs — which hang_pad places the garment more realistically.
 
-GPU: yalnız parser (difüzyon yok).
+GPU: parser only (no diffusion).
 
-Kullanım:
+Usage:
   python v2/scripts/placement_iou.py --idm-repo /content/IDM-VTON \\
       [--sets ckpt_control_on ckpt_control_on_hp-012]
 """
@@ -62,7 +62,7 @@ def main() -> int:
     prep = PersonPreprocessor(args.idm_repo)
     by_pid = {p.id: p for p in manifest.persons}
 
-    # Kişi başına GERÇEK giysi maskesi bir kez (tüm setler aynı referansı kullansın)
+    # The REAL garment mask per person, computed once (so every set uses the same reference)
     worn: dict[str, np.ndarray] = {}
 
     def worn_mask(pid: str) -> np.ndarray | None:
@@ -72,17 +72,17 @@ def main() -> int:
                 worn[pid] = np.isin(cv2.resize(np.asarray(pp.parse), (W, H),
                                                interpolation=cv2.INTER_NEAREST), ATR_GARMENT)
             except Exception as e:
-                print(f"  {pid}: parser başarısız — {e}", file=sys.stderr)
+                print(f"  {pid}: parser failed — {e}", file=sys.stderr)
                 worn[pid] = None
         return worn[pid]
 
-    print("=== YERLEŞİM IoU (üretilen giysi vs kişinin gerçek giysisi) ===")
-    print("    geo_iou'dan FARKI: hedef bizim koyduğumuz silüet değil, bağımsız parser.\n")
+    print("=== PLACEMENT IoU (generated garment vs the person's real garment) ===")
+    print("    DIFFERENCE from geo_iou: the target is not the silhouette we supplied, it is an independent parser.\n")
     rows = []
     for name in args.sets:
         pred_dir = out_root / name / "preds"
         if not pred_dir.exists():
-            print(f"{name:28s} klasör yok — atlandı")
+            print(f"{name:28s} no folder — skipped")
             continue
         vals = []
         for combo in manifest.combos:
@@ -101,17 +101,17 @@ def main() -> int:
                 if union:
                     vals.append(float((p & w).sum() / union))
         if not vals:
-            print(f"{name:28s} .predsil yok — atlandı")
+            print(f"{name:28s} no .predsil — skipped")
             continue
         rows.append((name, float(np.mean(vals)), len(vals)))
-        print(f"{name:28s} yerleşim IoU = {np.mean(vals):.4f}  (n={len(vals)})")
+        print(f"{name:28s} placement IoU = {np.mean(vals):.4f}  (n={len(vals)})")
 
     if len(rows) >= 2:
         best = max(rows, key=lambda r: r[1])
-        print(f"\nEN İYİ YERLEŞİM: {best[0]} → {best[1]:.4f}")
-        print("Bu metrik hangi koşullamanın GERÇEKÇİ yerleştirdiğini söyler;")
-        print("geo_iou ise yalnız modelin koşullamaya sadakatini ölçer. İkisi çelişirse")
-        print("görsel doğruluk için BU metriğe bakın.")
+        print(f"\nBEST PLACEMENT: {best[0]} → {best[1]:.4f}")
+        print("This metric tells you which conditioning places the garment REALISTICALLY;")
+        print("geo_iou only measures the model's fidelity to the conditioning. If the two")
+        print("disagree, look at THIS metric for visual correctness.")
     return 0
 
 

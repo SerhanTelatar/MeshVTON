@@ -1,5 +1,5 @@
-"""Faz 4 çekirdek testleri: flow matching, zero-init kontrol embedder, token paketleme.
-Hepsi saf torch — GPU/FLUX gerektirmez."""
+"""Phase 4 core tests: flow matching, the zero-init control embedder, token packing.
+All pure torch — no GPU/FLUX required."""
 
 import pytest
 import torch
@@ -40,28 +40,28 @@ def test_rf_loss_zero_at_perfect_prediction():
 
 
 def test_rf_loss_token_mask_excludes_reference():
-    """Referans token'larındaki hata kayba girmemeli."""
+    """Errors on the reference tokens must not enter the loss."""
     x0, noise = torch.randn(1, 6, 4), torch.randn(1, 6, 4)
     v = rf_target(x0, noise).clone()
-    v[:, 3:] += 100.0  # son 3 token (referans) tamamen yanlış
+    v[:, 3:] += 100.0  # the last 3 tokens (reference) are completely wrong
     mask = torch.tensor([[True, True, True, False, False, False]])
     assert rf_loss(v, x0, noise, token_mask=mask).item() == pytest.approx(0.0, abs=1e-10)
-    assert rf_loss(v, x0, noise).item() > 1.0  # masksız olsa cezalanırdı
+    assert rf_loss(v, x0, noise).item() > 1.0  # it would be penalized without the mask
 
 
 def test_logit_normal_and_shift():
     g = torch.Generator().manual_seed(0)
     t = sample_logit_normal_t(4096, generator=g)
     assert ((t > 0) & (t < 1)).all()
-    assert 0.4 < t.mean().item() < 0.6  # mean=0 → medyan 0.5
+    assert 0.4 < t.mean().item() < 0.6  # mean=0 → median 0.5
     s = resolution_shift(3072)
-    assert s > 1.0  # uzun dizi → gürültüye kaydır
+    assert s > 1.0  # long sequence → shift towards noise
     ts = apply_shift(t, s)
-    assert (ts >= t - 1e-6).all()  # shift t'yi 1'e yaklaştırır
-    assert torch.allclose(apply_shift(t, 1.0), t)  # s=1 kimlik
+    assert (ts >= t - 1e-6).all()  # shift pushes t towards 1
+    assert torch.allclose(apply_shift(t, 1.0), t)  # s=1 is the identity
 
 
-# --------------------------- kontrol embedder --------------------------- #
+# --------------------------- control embedder --------------------------- #
 
 
 def _embedder():
@@ -70,12 +70,12 @@ def _embedder():
 
 
 def test_zero_init_is_identity():
-    """v1 dersinin kilidi: init'te kontrollü çıktı, stok çıktıyla BİT-EŞ."""
+    """The crux of the v1 lesson: at init the controlled output is BIT-IDENTICAL to stock."""
     emb, orig = _embedder()
     x = torch.randn(2, 10, 384)
-    ctrl = torch.randn(2, 10, 128) * 100  # ne olursa olsun etkisiz olmalı
+    ctrl = torch.randn(2, 10, 128) * 100  # must have no effect whatever it is
     assert torch.equal(emb(torch.cat([x, ctrl], -1)), orig(x))
-    assert torch.equal(emb(x), orig(x))  # kontrolsüz çağrı da stok
+    assert torch.equal(emb(x), orig(x))  # a call without control is stock too
 
 
 def test_only_control_proj_trains():
@@ -117,7 +117,7 @@ def test_attach_idempotent():
     assert a is b and isinstance(tr.x_embedder, ControlXEmbedder)
 
 
-# --------------------------- referans token'ları --------------------------- #
+# --------------------------- reference tokens --------------------------- #
 
 
 def test_pack_unpack_roundtrip():
@@ -126,7 +126,7 @@ def test_pack_unpack_roundtrip():
     assert tokens.shape == (2, 6 * 5, 64)
     assert torch.equal(unpack_latents(tokens, 12, 10), x)
     with pytest.raises(ValueError):
-        pack_latents(torch.randn(1, 4, 7, 8))  # tek H
+        pack_latents(torch.randn(1, 4, 7, 8))  # odd H
 
 
 def test_img_ids_and_reference_concat():
@@ -143,31 +143,31 @@ def test_img_ids_and_reference_concat():
     assert torch.equal(tokens[:, :30], tgt) and torch.equal(tokens[:, 30:], ref)
 
 
-# ------------------------ Fill dizi birleştirme ------------------------ #
+# ------------------------ Fill sequence assembly ------------------------ #
 
 
 def test_mask_image_for_fill_produces_black():
-    """[-1,1] uzayında maske içi SİYAH (-1) olmalı, gri (0) değil (Fill sözleşmesi)."""
+    """In [-1,1] space the inside of the mask must be BLACK (-1), not grey (0) (the Fill contract)."""
     from meshvton2.model.flux_tryon import mask_image_for_fill
 
-    img = torch.full((1, 3, 8, 8), 0.5)  # açık gri görüntü
+    img = torch.full((1, 3, 8, 8), 0.5)  # light grey image
     mask = torch.zeros(1, 1, 8, 8)
     mask[..., 2:6, 2:6] = 1.0
     out = mask_image_for_fill(img, mask)
-    assert torch.allclose(out[..., 3, 3], torch.tensor(-1.0))  # maske içi siyah
-    assert torch.allclose(out[..., 0, 0], torch.tensor(0.5))   # maske dışı aynen
+    assert torch.allclose(out[..., 3, 3], torch.tensor(-1.0))  # black inside the mask
+    assert torch.allclose(out[..., 0, 0], torch.tensor(0.5))   # unchanged outside the mask
 
 
 def test_pack_pixel_mask_shape_and_content():
     from meshvton2.model.reference_tokens import pack_pixel_mask
 
     mask = torch.zeros(2, 1, 32, 16)  # latent 4x2
-    mask[:, :, :8, :] = 1.0           # üst çeyrek dolu
+    mask[:, :, :8, :] = 1.0           # the top quarter is filled
     p = pack_pixel_mask(mask, 4, 2)
     assert p.shape == (2, (4 // 2) * (2 // 2), 256)
     assert p.min() == 0.0 and p.max() == 1.0
     with pytest.raises(ValueError):
-        pack_pixel_mask(mask, 8, 4)  # boyut uyumsuz
+        pack_pixel_mask(mask, 8, 4)  # mismatched size
 
 
 def test_assemble_train_sequence_layout():
@@ -183,14 +183,14 @@ def test_assemble_train_sequence_layout():
     tokens, ids, lt = assemble_train_sequence(xt, masked, pmask, ctrls, ref)
     l_each = (h // 2) * (w // 2)
     assert lt == l_each
-    assert tokens.shape == (b, 2 * l_each, 384 + 128)  # hedef + referans
+    assert tokens.shape == (b, 2 * l_each, 384 + 128)  # target + reference
     assert ids.shape == (2 * l_each, 3)
     assert (ids[:l_each, 0] == 0).all() and (ids[l_each:, 0] == 1).all()
-    # referans token'larında mask(256) ve kontrol(128) kanalları SIFIR
+    # in the reference tokens the mask(256) and control(128) channels are ZERO
     ref_part = tokens[:, l_each:]
-    assert (ref_part[..., 128:384] == 0).all()  # mask kanalları
-    assert (ref_part[..., 384:] == 0).all()     # kontrol kanalları
-    # referansın ilk iki 64'lük yuvası aynı (ref | ref)
+    assert (ref_part[..., 128:384] == 0).all()  # mask channels
+    assert (ref_part[..., 384:] == 0).all()     # control channels
+    # the reference's first two 64-wide slots are identical (ref | ref)
     assert torch.equal(ref_part[..., :64], ref_part[..., 64:128])
 
 
@@ -200,8 +200,8 @@ def test_sigma_schedule():
     s = make_sigma_schedule(28, 3072)
     assert s.shape == (29,)
     assert s[0] == pytest.approx(1.0) and s[-1] == pytest.approx(0.0)
-    assert (s[:-1] > s[1:]).all()  # kesin azalan
-    # Euler tutarlılığı: sabit v ile x tam x0'a iner (x_t = x0 + σ·v tanımı gereği)
+    assert (s[:-1] > s[1:]).all()  # strictly decreasing
+    # Euler consistency: with a constant v, x lands exactly on x0 (by the x_t = x0 + σ·v definition)
     x0 = torch.randn(2, 8)
     v = torch.randn(2, 8)
     x = x0 + s[0] * v

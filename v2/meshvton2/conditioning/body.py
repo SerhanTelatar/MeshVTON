@@ -1,29 +1,29 @@
-"""HMR2.0 (4D-Humans) -> SMPL-X parametre backend'i.
+"""HMR2.0 (4D-Humans) -> SMPL-X parameter backend.
 
-v1 src/modules/hmr2_adapter.py'den taşındı; KRİTİK FARK: `pred_cam` (s,tx,ty) ve
-`bbox` artık ATILMIYOR, döndürülüyor — fotoğrafın gerçek perspektif kamerası
-bunlardan türetilir (camera.py). v2'de kamera azimuth tahmini YOKTUR; v1'in
-ön/arka bug'ının kökü olan `azim_from_global_orient` zinciri bilinçli olarak
-taşınmadı.
+Ported from v1 src/modules/hmr2_adapter.py; CRITICAL DIFFERENCE: `pred_cam` (s,tx,ty) and
+`bbox` are NO LONGER DISCARDED, they are returned — the photo's real perspective camera is
+derived from them (camera.py). There is NO camera azimuth estimation in v2; the
+`azim_from_global_orient` chain that was the root of v1's front/back bug was deliberately
+not ported.
 
-Sözleşme (builder.build_conditioning'in beklediği smplx_params):
+Contract (the smplx_params that builder.build_conditioning expects):
     betas (10,), body_pose (63,), global_orient (3,), transl (3,),
-    pred_cam (3,) [s, tx, ty — crop-normalize weak-perspective], bbox (4,) [x0,y0,x1,y1]
+    pred_cam (3,) [s, tx, ty — crop-normalized weak-perspective], bbox (4,) [x0,y0,x1,y1]
 
-Kurulum (Colab): pip install git+https://github.com/shubham-goel/4D-Humans.git
+Setup (Colab): pip install git+https://github.com/shubham-goel/4D-Humans.git
 """
 
 from __future__ import annotations
 
 import numpy as np
 
-HMR2_CROP = 256          # HMR2 girdi çözünürlüğü
-HMR2_FOCAL = 5000.0      # HMR2'nin crop-uzayı sabit odak uzaklığı (256px'e göre)
+HMR2_CROP = 256          # HMR2 input resolution
+HMR2_FOCAL = 5000.0      # HMR2's fixed crop-space focal length (relative to 256px)
 
 
 def _patch_torch_load_weights_only(torch):
-    """PyTorch 2.6+ torch.load(weights_only=True) varsayılanı HMR2'nin Lightning
-    checkpoint'ini reddeder. Güvenilir checkpoint → weights_only=False'a zorla."""
+    """The PyTorch 2.6+ torch.load(weights_only=True) default rejects HMR2's Lightning
+    checkpoint. Trusted checkpoint → force weights_only=False."""
     if getattr(torch.load, "_wo_patched", False):
         return
     _orig = torch.load
@@ -43,10 +43,10 @@ def _patch_torch_load_weights_only(torch):
 
 
 def detect_person_bbox(image_rgb: np.ndarray) -> np.ndarray:
-    """Görüntü merkezli KARE bbox (kenar = max(H,W); görüntü dışına taşabilir,
-    regress padding'le halleder). HMR2 kare crop bekler — dikdörtgen bbox'ı
-    256x256'ya oran bozarak ezmek pose/pred_cam'i sistematik kaydırıyordu
-    (kamera doğrulamasında soldan kayma, IoU 0.64-0.80 arası dalgalanma)."""
+    """Image-centred SQUARE bbox (side = max(H,W); it may extend outside the image, the
+    regress padding handles that). HMR2 expects a square crop — squashing a rectangular bbox
+    into 256x256 while breaking the aspect ratio shifted pose/pred_cam systematically
+    (a leftward drift in camera validation, IoU fluctuating between 0.64-0.80)."""
     h, w = image_rgb.shape[:2]
     side = max(h, w)
     cx, cy = w / 2.0, h / 2.0
@@ -54,7 +54,7 @@ def detect_person_bbox(image_rgb: np.ndarray) -> np.ndarray:
 
 
 def build_hmr2_backend(device: str = "cuda"):
-    """HMR2.0 yükler; `regress(image_rgb, bbox=None) -> smplx_params dict` döndürür."""
+    """Loads HMR2.0; returns `regress(image_rgb, bbox=None) -> smplx_params dict`."""
     import cv2
     import torch
 
@@ -74,7 +74,7 @@ def build_hmr2_backend(device: str = "cuda"):
     mean = np.array([0.485, 0.456, 0.406], np.float32)
     std = np.array([0.229, 0.224, 0.225], np.float32)
 
-    def _aa(R):  # (3,3) rotasyon -> (3,) axis-angle
+    def _aa(R):  # (3,3) rotation -> (3,) axis-angle
         a, _ = cv2.Rodrigues(np.asarray(R, np.float64))
         return a.reshape(3).astype(np.float32)
 
@@ -84,7 +84,7 @@ def build_hmr2_backend(device: str = "cuda"):
             bbox = detect_person_bbox(image_rgb)
         x0, y0, x1, y1 = (int(round(v)) for v in bbox)
         h, w = image_rgb.shape[:2]
-        # bbox görüntü dışına taşarsa sıfırla doldur (kare crop garantisi)
+        # if the bbox extends outside the image, pad with zeros (square crop guarantee)
         pad_l, pad_t = max(0, -x0), max(0, -y0)
         pad_r, pad_b = max(0, x1 - w), max(0, y1 - h)
         crop = image_rgb[max(0, y0):min(h, y1), max(0, x0):min(w, x1)]
@@ -99,7 +99,7 @@ def build_hmr2_backend(device: str = "cuda"):
         bp = sp["body_pose"][0].cpu().numpy().reshape(-1, 3, 3)  # (23,3,3)
         betas = sp["betas"][0].cpu().numpy().reshape(-1)[:10].astype(np.float32)
         body_pose = np.concatenate([_aa(bp[i]) for i in range(21)]).astype(np.float32)
-        # v1'de atılan alan — v2 kamerasının kilit taşı:
+        # the field v1 discarded — the keystone of the v2 camera:
         pred_cam = out["pred_cam"][0].cpu().numpy().reshape(3).astype(np.float32)
         return {
             "betas": betas,
@@ -114,15 +114,15 @@ def build_hmr2_backend(device: str = "cuda"):
 
 
 # --------------------------------------------------------------------------- #
-# SMPL-X gövde modeli (builder'ın vertex kaynağı)
+# SMPL-X body model (the builder's vertex source)
 # --------------------------------------------------------------------------- #
 
 _BODY_MODEL = None
 
 
 def get_body_model(model_dir: str | None = None, device: str = "cpu") -> "SMPLXBody":
-    """Süreç-başına tek SMPLXBody (model yüklemesi pahalı). Yol önceliği:
-    açık argüman > SMPLX_MODEL_DIR env > v1 konumu checkpoints/pretrained/smplx."""
+    """One SMPLXBody per process (loading the model is expensive). Path priority:
+    explicit argument > SMPLX_MODEL_DIR env > the v1 location checkpoints/pretrained/smplx."""
     global _BODY_MODEL
     if _BODY_MODEL is None:
         import os
@@ -133,8 +133,8 @@ def get_body_model(model_dir: str | None = None, device: str = "cpu") -> "SMPLXB
 
 
 class SMPLXBody:
-    """smplx paketinin ince sarmalayıcısı — builder sözleşmesindeki parametrelerden
-    vertex/pelvis üretir. Kamera-hizalı çerçevede çalışır (global_orient HMR2'den)."""
+    """A thin wrapper around the smplx package — produces vertices/pelvis from the parameters
+    in the builder contract. Works in the camera-aligned frame (global_orient from HMR2)."""
 
     def __init__(self, model_dir: str, gender: str = "neutral", device: str = "cpu"):
         import smplx
@@ -142,8 +142,8 @@ class SMPLXBody:
 
         self.torch = torch
         self.device = device
-        # Esnek yol çözümü: smplx paketi <dir>/smplx/SMPLX_*.npz düzeni bekler ama
-        # kullanıcı Drive'ı dosyaları düz klasöre koyar — ikisini de destekle.
+        # Flexible path resolution: the smplx package expects a <dir>/smplx/SMPLX_*.npz layout,
+        # but a user's Drive puts the files in a flat folder — support both.
         from pathlib import Path
 
         p = Path(model_dir)
@@ -151,12 +151,12 @@ class SMPLXBody:
         model_path = model_dir
         for cand in (p / fname, p / "smplx" / fname):
             if cand.exists():
-                model_path = str(cand)  # smplx.create dosya yolunu da kabul eder
+                model_path = str(cand)  # smplx.create accepts a file path too
                 break
         else:
             if not p.exists():
                 raise FileNotFoundError(
-                    f"SMPL-X modeli yok: {p} — SMPLX_MODEL_DIR'i {fname} içeren klasöre ayarlayın."
+                    f"no SMPL-X model: {p} — point SMPLX_MODEL_DIR at the folder containing {fname}."
                 )
         self.model = smplx.create(
             model_path, model_type="smplx", gender=gender, use_pca=False, batch_size=1
@@ -168,7 +168,7 @@ class SMPLXBody:
         return t
 
     def __call__(self, smplx_params: dict) -> dict:
-        """-> {verts (V,3) float64, faces (F,3), pelvis (3,)} — kamera çerçevesinde."""
+        """-> {verts (V,3) float64, faces (F,3), pelvis (3,)} — in the camera frame."""
         with self.torch.no_grad():
             out = self.model(
                 betas=self._t(smplx_params["betas"], 10),
@@ -178,12 +178,12 @@ class SMPLXBody:
                 return_verts=True,
             )
         verts = out.vertices[0].cpu().numpy().astype(np.float64)
-        joints = out.joints[0, :22].cpu().numpy().astype(np.float64)  # SMPL gövde eklemleri
+        joints = out.joints[0, :22].cpu().numpy().astype(np.float64)  # SMPL body joints
         return {"verts": verts, "faces": self.faces, "pelvis": joints[0], "joints": joints}
 
     def rest(self) -> dict:
-        """Varsayılan rest gövde (β=0, θ=0) — giysi bağlama (binding) referansı.
-        Cache per-garment evrensel kalsın diye kişiye özgü β KULLANILMAZ."""
+        """The default rest body (β=0, θ=0) — the reference for garment binding.
+        Person-specific β is NOT USED so the per-garment cache stays universal."""
         zeros = {
             "betas": np.zeros(10), "body_pose": np.zeros(63),
             "global_orient": np.zeros(3), "transl": np.zeros(3),

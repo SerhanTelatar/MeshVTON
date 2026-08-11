@@ -1,18 +1,18 @@
-"""FLUX try-on sarmalayıcısı — TÜM diffusers temas noktaları bu dosyada.
+"""FLUX try-on wrapper — ALL diffusers touch points live in this file.
 
-Faz 1 (zero-shot, eğitimsiz) varyantları:
-- "fill_spatial": FluxFillPipeline; canvas = [görünüm referansı | agnostic kişi],
-  maske yalnız kişi yarısında → model referansı görerek inpaint eder (CatVTON hilesi).
-- "kontext": FluxKontextPipeline; giriş = [kişi | referans] dikişli tek görüntü +
-  edit talimatı, çıktı sol yarıdan kırpılır.
+Phase 1 (zero-shot, untrained) variants:
+- "fill_spatial": FluxFillPipeline; canvas = [appearance reference | agnostic person],
+  the mask covers only the person half → the model inpaints while seeing the reference (the CatVTON trick).
+- "kontext": FluxKontextPipeline; input = a single stitched image [person | reference] +
+  an edit instruction, the output is cropped from the left half.
 
-Plan notu: üçüncü varyant (Fill + eğitimsiz Kontext-tarzı ref-token sequence-concat)
-Faz 4'e ertelendi — eğitimsiz halinin kanıt değeri düşük (Fill ref-token görmeden
-eğitildi, OOD) ve özel örnekleme döngüsü zaten Faz 4'te reference_tokens.py ile
-geliyor. Karar Faz 1 raporunda (a) vs (c) kanıtıyla verilir.
+Plan note: the third variant (Fill + untrained Kontext-style ref-token sequence concat)
+was deferred to Phase 4 — its untrained form has little evidential value (Fill was trained
+without ever seeing ref tokens, so it is OOD) and the custom sampling loop already arrives
+in Phase 4 via reference_tokens.py. The decision is made from the (a) vs (c) evidence in the Phase 1 report.
 
-Maske disiplini: fill_spatial çıktısında maske DIŞI pikseller orijinal kişiyle
-kompozit edilir — zero-shot modelin kişi/arka planı bozması metriklere sızmaz.
+Mask discipline: in the fill_spatial output, pixels OUTSIDE the mask are composited back
+from the original person — a zero-shot model damaging the person/background cannot leak into the metrics.
 """
 
 from __future__ import annotations
@@ -33,18 +33,18 @@ KONTEXT_PROMPT = (
 )
 
 
-# ------------------------- saf yardımcılar (lokal testlenebilir) ------------------------- #
+# ------------------------- pure helpers (locally testable) ------------------------- #
 
 
 def make_side_canvas(left: np.ndarray, right: np.ndarray) -> np.ndarray:
-    """İki (H,W,3) görüntüyü yatay dikişle (H,2W,3) yapar; boyutlar eşit olmalı."""
+    """Stitches two (H,W,3) images horizontally into (H,2W,3); the sizes must match."""
     if left.shape != right.shape:
-        raise ValueError(f"Boyut uyuşmazlığı: {left.shape} vs {right.shape}")
+        raise ValueError(f"Size mismatch: {left.shape} vs {right.shape}")
     return np.concatenate([left, right], axis=1)
 
 
 def make_side_mask(mask_right: np.ndarray) -> np.ndarray:
-    """(H,W) maskeyi (H,2W) canvas maskesine koyar: sol yarı (referans) daima 0."""
+    """Places an (H,W) mask into an (H,2W) canvas mask: the left half (reference) is always 0."""
     h, w = mask_right.shape[:2]
     out = np.zeros((h, 2 * w), dtype=np.uint8)
     out[:, w:] = mask_right
@@ -58,7 +58,7 @@ def crop_half(canvas: np.ndarray, side: str) -> np.ndarray:
 
 
 def composite_outside_mask(pred: np.ndarray, original: np.ndarray, mask: np.ndarray) -> np.ndarray:
-    """Maske dışını orijinalden geri koy (kenarda 3px yumuşatma)."""
+    """Restore everything outside the mask from the original (3px feather at the edge)."""
     import cv2
 
     m = ((mask > 127) * 255).astype(np.uint8)
@@ -68,7 +68,7 @@ def composite_outside_mask(pred: np.ndarray, original: np.ndarray, mask: np.ndar
     return out.round().astype(np.uint8)
 
 
-# ------------------------------- pipeline sarmalayıcı ------------------------------- #
+# ------------------------------- pipeline wrapper ------------------------------- #
 
 
 class FluxTryOn:
@@ -83,9 +83,9 @@ class FluxTryOn:
         steps: int = 28,
     ):
         if variant not in VARIANTS:
-            raise ValueError(f"variant {VARIANTS} içinden olmalı, gelen: {variant}")
+            raise ValueError(f"variant must be one of {VARIANTS}, got: {variant}")
         self.variant = variant
-        if dtype is None:  # T4 gibi Turing GPU'lar bf16'yı desteklemez → fp16
+        if dtype is None:  # Turing GPUs such as the T4 do not support bf16 → fp16
             dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
         self.device, self.dtype, self.steps = device, dtype, steps
         self.repo = fill_repo if variant == "fill_spatial" else kontext_repo
@@ -115,7 +115,7 @@ class FluxTryOn:
         seed: int = 0,
         prompt: str | None = None,
     ) -> np.ndarray:
-        """Tek try-on üretimi; (H,W,3) uint8 RGB döner."""
+        """A single try-on generation; returns (H,W,3) uint8 RGB."""
         self._load()
         h, w = person.shape[:2]
         gen = torch.Generator(device="cpu").manual_seed(seed)
@@ -130,7 +130,7 @@ class FluxTryOn:
                 height=h,
                 width=2 * w,
                 num_inference_steps=self.steps,
-                guidance_scale=30.0,  # Fill-dev önerilen yüksek guidance
+                guidance_scale=30.0,  # high guidance recommended for Fill-dev
                 generator=gen,
             ).images[0]
             pred = crop_half(np.asarray(out.convert("RGB")), "right")
@@ -146,7 +146,7 @@ class FluxTryOn:
                 generator=gen,
             ).images[0]
             arr = np.asarray(out.convert("RGB"))
-            if arr.shape[:2] != (h, 2 * w):  # Kontext tercih ettiği çözünürlüğe kayabilir
+            if arr.shape[:2] != (h, 2 * w):  # Kontext may drift to its preferred resolution
                 arr = np.asarray(Image.fromarray(arr).resize((2 * w, h), Image.LANCZOS))
             pred = crop_half(arr, "left")
 
@@ -155,7 +155,7 @@ class FluxTryOn:
 
 
 # --------------------------------------------------------------------------- #
-# Faz 4: eğitim — FluxTrainModule (FLUX'a dokunan TEK yer burası kalmaya devam)
+# Phase 4: training — FluxTrainModule (still the ONLY place that touches FLUX)
 # --------------------------------------------------------------------------- #
 
 from meshvton2.model.reference_tokens import (  # noqa: E402
@@ -165,31 +165,31 @@ from meshvton2.model.reference_tokens import (  # noqa: E402
     pack_pixel_mask,
 )
 
-FILL_BASE_CH = 384  # 64 (noisy latent) + 64 (masked image latent) + 256 (mask blokları)
+FILL_BASE_CH = 384  # 64 (noisy latent) + 64 (masked image latent) + 256 (mask blocks)
 
 
 def mask_image_for_fill(img: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-    """Fill'in beklediği maskeli görüntü: maske içi SİYAH.
+    """The masked image Fill expects: BLACK inside the mask.
 
-    Dikkat: [-1,1] uzayında img*(1-mask) siyah değil GRİ (0) üretir — iki taslak
-    sürümde de bu hata vardı. Doğrusu [0,1]'e çık, maskele, geri dön.
+    Careful: in [-1,1] space img*(1-mask) produces GREY (0), not black — both draft
+    versions had this bug. The correct way is to go to [0,1], mask, and come back.
     """
     img01 = (img + 1.0) / 2.0
     return (img01 * (1.0 - mask)) * 2.0 - 1.0
 
 
 def assemble_train_sequence(
-    xt_lat: torch.Tensor,          # (B,16,h,w) gürültülü hedef latent
-    masked_lat: torch.Tensor,      # (B,16,h,w) maskeli görüntü latent'i
-    pixel_mask: torch.Tensor,      # (B,1,8h,8w) inpaint maskesi {0,1}
-    control_lats: list[torch.Tensor],  # her biri (B,16,h,w) — [normal, depth_sil]
-    ref_lat: torch.Tensor,         # (B,16,h,w) görünüm referansı latent'i
+    xt_lat: torch.Tensor,          # (B,16,h,w) noisy target latent
+    masked_lat: torch.Tensor,      # (B,16,h,w) masked image latent
+    pixel_mask: torch.Tensor,      # (B,1,8h,8w) inpaint mask {0,1}
+    control_lats: list[torch.Tensor],  # each (B,16,h,w) — [normal, depth_sil]
+    ref_lat: torch.Tensor,         # (B,16,h,w) appearance reference latent
 ) -> tuple[torch.Tensor, torch.Tensor, int]:
-    """Fill kanal düzeni + Kontext-tarzı referans concat (saf tensör — lokal testli).
+    """Fill channel layout + Kontext-style reference concat (pure tensors — locally tested).
 
-    hedef token = [x_t 64 | masked 64 | mask 256 | kontrol 64×N] = 384+64N
-    ref   token = [ref 64 | ref 64    | 0    256 | 0      64×N]
-      (ref'in "masked image" yuvası kendisi: temiz bağlam; mask=0 → inpaint edilmez)
+    target token = [x_t 64 | masked 64 | mask 256 | control 64×N] = 384+64N
+    ref    token = [ref 64 | ref 64    | 0    256 | 0       64×N]
+      (the ref's "masked image" slot is itself: clean context; mask=0 → it is not inpainted)
 
     Returns: (tokens (B,Lt+Lr,384+64N), img_ids (Lt+Lr,3), Lt)
     """
@@ -209,13 +209,13 @@ def assemble_train_sequence(
 
 
 class FluxTrainModule:
-    """FLUX.1 Fill + LoRA + zero-init kontrol embedder'ı eğitim sarmalayıcısı.
+    """FLUX.1 Fill + LoRA + zero-init control embedder training wrapper.
 
-    Dondurulmuş Fill transformer + VAE; eğitilen = LoRA + control_proj.
-    Sabit prompt'un T5/CLIP embed'leri setup'ta CPU'da BİR KEZ hesaplanır
-    (GPU'da ~9GB T5 tepe kullanımı olmaz), text encoder'lar atılır.
-    step(batch) -> loss; TrainLoop'a step_fn olarak verilir. Eğitilebilir
-    durum = transformer'daki requires_grad parametreler (tek checkpoint).
+    Frozen Fill transformer + VAE; trained = LoRA + control_proj.
+    The fixed prompt's T5/CLIP embeddings are computed ONCE on the CPU during setup
+    (no ~9GB T5 peak on the GPU), then the text encoders are dropped.
+    step(batch) -> loss; passed to TrainLoop as step_fn. The trainable state
+    = the requires_grad parameters in the transformer (a single checkpoint).
     """
 
     def __init__(
@@ -227,11 +227,11 @@ class FluxTrainModule:
         lora_rank: int = 64,
         lora_alpha: int = 64,
         control_images: int = 2,       # normal + depth_sil
-        train_guidance: float = 1.0,   # Fill guidance-distilled; eğitimde sabit
-        ref_dropout: float = 0.1,      # referansı %10 gri yap → geometri yük taşımayı öğrenir
+        train_guidance: float = 1.0,   # Fill is guidance-distilled; fixed during training
+        ref_dropout: float = 0.1,      # grey out the reference 10% of the time → it learns to carry load from geometry
         t_mean: float = 0.0,
         t_std: float = 1.0,
-        compile_transformer: bool = False,  # torch.compile (~1.3x; ilk adımda dakikalarca derleme)
+        compile_transformer: bool = False,  # torch.compile (~1.3x; minutes of compilation on the first step)
         seed: int = 0,
     ):
         self.compile_transformer = compile_transformer
@@ -243,7 +243,7 @@ class FluxTrainModule:
         self.gen = torch.Generator().manual_seed(seed)
         self.transformer = None
 
-    # ------------------------------ kurulum ------------------------------ #
+    # ------------------------------ setup ------------------------------ #
 
     def setup(self):
         import gc
@@ -258,7 +258,7 @@ class FluxTrainModule:
         self.dtype = dtype
         pipe = FluxFillPipeline.from_pretrained(self.repo, torch_dtype=dtype)
 
-        # Sabit prompt embed'leri CPU'da bir kez → text encoder'ları at
+        # Fixed prompt embeddings once on the CPU → drop the text encoders
         with torch.no_grad():
             pe, ppe, tids = pipe.encode_prompt(
                 prompt=self.prompt, prompt_2=None, device="cpu", num_images_per_prompt=1
@@ -277,33 +277,33 @@ class FluxTrainModule:
         self.control_embedder = attach_control_embedder(self.transformer, self.control_in)
         self.transformer.enable_gradient_checkpointing()
         self.transformer.train()
-        # ckpt/durum isimleri değişmesin diye ham modül referansı (compile '_orig_mod.' öneki ekler)
+        # Raw module reference so ckpt/state names stay stable (compile adds a '_orig_mod.' prefix)
         self._raw_transformer = self.transformer
         if self.compile_transformer:
             try:
                 self.transformer = torch.compile(self.transformer, dynamic=False)
-                print("torch.compile aktif — İLK adım dakikalarca sürebilir (derleme), sonrası hızlı")
-            except Exception as e:  # compile başarısızlığı eğitimi durdurmasın
-                print(f"UYARI: torch.compile başarısız ({e}) — derlenmemiş devam")
+                print("torch.compile enabled — the FIRST step may take minutes (compilation), then it is fast")
+            except Exception as e:  # a compile failure must not stop training
+                print(f"WARNING: torch.compile failed ({e}) — continuing uncompiled")
 
         del pipe.text_encoder, pipe.text_encoder_2, pipe.tokenizer, pipe.tokenizer_2, pipe
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-        print(f"FluxTrainModule hazır — eğitilebilir param: {count_trainable(self.transformer):,}")
+        print(f"FluxTrainModule ready — trainable params: {count_trainable(self.transformer):,}")
         return self
 
-    # ------------------------------ yardımcılar ------------------------------ #
+    # ------------------------------ helpers ------------------------------ #
 
     @torch.no_grad()
     def encode(self, img: torch.Tensor) -> torch.Tensor:
-        """(B,3,H,W) [-1,1] -> FLUX latent (B,16,H/8,W/8), ölçekli."""
+        """(B,3,H,W) [-1,1] -> FLUX latent (B,16,H/8,W/8), scaled."""
         img = img.to(self.device, self.vae.dtype)
         z = self.vae.encode(img).latent_dist.sample()
         return (z - self.vae_shift) * self.vae_scale
 
     def _gray_latent(self, hw: tuple[int, int]) -> torch.Tensor:
-        """ref_dropout için nötr gri görüntünün latent'i (şekil başına bir kez)."""
+        """Latent of the neutral grey image used for ref_dropout (computed once per shape)."""
         key = tuple(hw)
         cache = getattr(self, "_gray_cache", None) or {}
         if key not in cache:
@@ -318,8 +318,8 @@ class FluxTrainModule:
     def trainable_state(self) -> dict:
         from meshvton2.model.lora import trainable_state
 
-        # HAM modül üzerinden: compile sarmalayıcısı isimlere '_orig_mod.' öneki
-        # ekler — ckpt isim uzayı derleme durumundan bağımsız kalmalı (resume uyumu)
+        # Via the RAW module: the compile wrapper adds a '_orig_mod.' prefix to names —
+        # the ckpt namespace must stay independent of compile state (resume compatibility)
         return trainable_state(getattr(self, "_raw_transformer", self.transformer))
 
     def load_trainable_state(self, state: dict) -> None:
@@ -327,7 +327,7 @@ class FluxTrainModule:
 
         load_trainable_state(getattr(self, "_raw_transformer", self.transformer), state)
 
-    # -------------------------------- adım -------------------------------- #
+    # -------------------------------- step -------------------------------- #
 
     def step(self, batch: dict) -> torch.Tensor:
         from meshvton2.training.flow_matching import (
@@ -339,7 +339,7 @@ class FluxTrainModule:
         )
 
         mask_cpu = batch["inpaint_mask"]
-        if "gt_lat" in batch:  # precompute_latents.py yolu: VAE yok, PNG çözme yok (saf hız)
+        if "gt_lat" in batch:  # precompute_latents.py path: no VAE, no PNG decode (pure speed)
             to_dev = lambda k: batch[k].to(self.device, self.vae.dtype)
             x0 = to_dev("gt_lat")
             masked_lat = to_dev("masked_lat")
@@ -359,14 +359,14 @@ class FluxTrainModule:
                 drop = torch.rand(ref.shape[0], generator=self.gen) < self.ref_dropout
                 if drop.any():
                     ref = ref.clone()
-                    ref[drop] = 0.0  # [-1,1] ortası = nötr gri görüntü
+                    ref[drop] = 0.0  # the middle of [-1,1] = a neutral grey image
             ref_lat = self.encode(ref)
 
         b = x0.shape[0]
         noise = torch.randn(x0.shape, generator=self.gen).to(self.device, torch.float32)
         t = sample_logit_normal_t(b, mean=self.t_mean, std=self.t_std, generator=self.gen).to(self.device)
         t = apply_shift(t, resolution_shift((x0.shape[2] // 2) * (x0.shape[3] // 2)))
-        x_t = rf_interpolate(x0.float(), noise, t).to(x0.dtype)  # fp32 karışım, sonra geri
+        x_t = rf_interpolate(x0.float(), noise, t).to(x0.dtype)  # fp32 mix, then back
 
         mask = mask_cpu.to(self.device, x0.dtype)
         tokens, img_ids, lt = assemble_train_sequence(x_t, masked_lat, mask, ctrl_lats, ref_lat)
@@ -386,15 +386,15 @@ class FluxTrainModule:
 
 
 class FluxTryOnSampler:
-    """Eğitilmiş checkpoint'le try-on üretimi — FluxTrainModule.step'in AYNASI.
+    """Try-on generation with a trained checkpoint — the MIRROR of FluxTrainModule.step.
 
-    Aynı kanal düzeni, aynı referans token'ları, aynı guidance (eğitimdekiyle
-    tutarlı olmalı: LoRA guidance=1.0 altında adapte edildi). Euler örnekleme:
+    Same channel layout, same reference tokens, same guidance (it must match training:
+    the LoRA was adapted under guidance=1.0). Euler sampling:
     x_{i+1} = x_i + (σ_{i+1} − σ_i)·v.
 
-    control_scale: 1.0 = eğitilmiş kontrol; 0.0 = kontrol latent'leri sıfır →
-    control_proj(0)=0, bit-eş stok davranış — '--disable-control' ABLATION
-    KAPISI bununla ölçülür (v1 FAZ C dersinin otomatik testi).
+    control_scale: 1.0 = trained control; 0.0 = zero control latents →
+    control_proj(0)=0, bit-identical stock behaviour — the '--disable-control' ABLATION
+    GATE is measured with this (the automated test of the v1 PHASE C lesson).
     """
 
     def __init__(self, repo: str = "black-forest-labs/FLUX.1-Fill-dev", *,
@@ -409,23 +409,23 @@ class FluxTryOnSampler:
             import torch as _t
 
             ck = _t.load(checkpoint, map_location="cpu", weights_only=False)
-            state = ck.get("trainables") or ck  # TrainLoop ckpt'i veya düz sözlük
+            state = ck.get("trainables") or ck  # a TrainLoop ckpt or a plain dict
             self.module.load_trainable_state(state)
-            print(f"checkpoint yüklendi: {checkpoint} ({len(state)} tensör)")
+            print(f"checkpoint loaded: {checkpoint} ({len(state)} tensors)")
         self.module.transformer.eval()
 
     @torch.no_grad()
     def sample(self, bundle, *, steps: int = 28, seed: int = 0,
                control_scale: float = 1.0, guidance: float | None = None,
                return_raw: bool = False):
-        """bundle: ConditioningBundle (veya aynı alanlara sahip dict-benzeri).
-        guidance: None -> eğitimdeki değer (1.0); FLUX Fill guidance-damıtılmış,
-        yüksek guidance (3.5-30) sadakat/doygunluğu artırır (solgunluk çaresi).
-        return_raw: True ise (composited, raw_pred) döner — raw_pred kompozit
-        ÖNCESİ VAE çıktısıdır (maske dışı geri-yapıştırma yok); saydamlık/leke
-        modelin üretiminden mi yoksa kompozit kenar yumuşatmasından mı geldiğini
-        ayırt etmek için (bkz. [[meshvton-v2-inference-alignment]] teşhis akışı).
-        -> (H,W,3) uint8 try-on; maske dışı agnostic'ten kompozit edilir."""
+        """bundle: ConditioningBundle (or anything dict-like with the same fields).
+        guidance: None -> the training value (1.0); FLUX Fill is guidance-distilled,
+        high guidance (3.5-30) raises fidelity/saturation (the cure for washed-out output).
+        return_raw: if True returns (composited, raw_pred) — raw_pred is the VAE output
+        BEFORE compositing (no paste-back outside the mask); it tells apart whether
+        transparency/smearing comes from the model's generation or from the composite
+        edge feathering (see the [[meshvton-v2-inference-alignment]] diagnostic flow).
+        -> (H,W,3) uint8 try-on; outside the mask it is composited from the agnostic."""
         from meshvton2.model.reference_tokens import unpack_latents
         from meshvton2.training.flow_matching import make_sigma_schedule
 

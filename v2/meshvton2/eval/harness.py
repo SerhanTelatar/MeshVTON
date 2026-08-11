@@ -1,10 +1,10 @@
-"""Eval harness: golden manifest + tahmin dizini -> metrik tablosu (JSON + markdown).
+"""Eval harness: golden manifest + prediction directory -> metric table (JSON + markdown).
 
-Tahmin sözleşmesi (configs/eval.yaml ile aynı):
+Prediction contract (same as configs/eval.yaml):
   pred_dir/{person_id}_{garment_id}_{angle:03d}.png
-Opsiyonel yardımcı dosyalar aynı gövde adıyla:
+Optional auxiliary files with the same stem:
   {stem}.person.png  {stem}.mask.png  {stem}.sil.png  {stem}.ref.png  {stem}.gt.png
-Her metrik yalnız gerekli girdileri mevcutsa hesaplanır; eksikler "n/a" raporlanır.
+Each metric is computed only if its required inputs exist; missing ones are reported as "n/a".
 """
 
 from __future__ import annotations
@@ -21,8 +21,8 @@ from meshvton2.eval.golden_set import GoldenManifest
 
 PRED_PATTERN = "{person_id}_{garment_id}_{angle:03d}.png"
 AUX_SUFFIXES = ("person", "mask", "sil", "ref", "gt", "predsil")
-# predsil = ÜRETİLEN görüntünün parser'dan çıkan giysi maskesi — geo_iou bununla
-# ölçülür (koşullama silüetini koşullamayla kıyaslamak ablation'da sabit çıkar)
+# predsil = the garment mask the parser extracts from the GENERATED image — geo_iou is measured
+# with it (comparing the conditioning silhouette against the conditioning is constant in an ablation)
 
 
 @dataclass
@@ -31,7 +31,7 @@ class EvalRow:
     garment_id: str
     angle: int
     found: bool
-    values: dict  # metrik adı -> float | None
+    values: dict  # metric name -> float | None
 
 
 def _load_rgb(path: Path, size: tuple[int, int] | None = None) -> np.ndarray:
@@ -54,7 +54,7 @@ def _aux_paths(pred_path: Path) -> dict[str, Path]:
 
 
 def evaluate_item(pred_path: Path) -> dict:
-    """Tek tahmin için mevcut girdilerle hesaplanabilen tüm metrikler."""
+    """Every metric computable for a single prediction with the inputs available."""
     pred = _load_rgb(pred_path)
     size = pred.shape[:2]
     aux = {k: p for k, p in _aux_paths(pred_path).items() if p.exists()}
@@ -76,7 +76,7 @@ def evaluate_item(pred_path: Path) -> dict:
         )
 
     if "predsil" in aux and "sil" in aux:
-        # geometri sadakati: ÇIKTIDAKİ giysi bölgesi hedef silüete oturdu mu
+        # geometry fidelity: does the garment region IN THE OUTPUT match the target silhouette
         values["geo_iou"] = M.silhouette_iou(
             _load_mask(aux["predsil"], size), _load_mask(aux["sil"], size)
         )
@@ -149,11 +149,11 @@ def write_report(summary: dict, out_json: str | Path, out_md: str | Path | None 
 
     names = sorted(summary["overall"].keys())
     lines = [
-        f"# Eval raporu",
-        f"- Tahmin: {summary['found']}/{summary['total']} bulundu"
-        + (f", eksik: {len(summary['missing'])}" if summary["missing"] else ""),
+        f"# Eval report",
+        f"- Predictions: {summary['found']}/{summary['total']} found"
+        + (f", missing: {len(summary['missing'])}" if summary["missing"] else ""),
         "",
-        "| metrik | genel | " + " | ".join(f"{a}°" for a in summary["per_angle"]) + " |",
+        "| metric | overall | " + " | ".join(f"{a}°" for a in summary["per_angle"]) + " |",
         "|---|---|" + "---|" * len(summary["per_angle"]),
     ]
     for name in names:

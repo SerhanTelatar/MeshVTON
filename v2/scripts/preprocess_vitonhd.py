@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""VITON-HD gerçek verisini eğitim öğelerine dönüştürür (Colab, GPU).
+"""Converts real VITON-HD data into training items (Colab, GPU).
 
-Kişi başına: parser+openpose (agnostic+mask) → HMR2 (pred_cam kamerası) →
-build_conditioning(garment=None): gövde-only normal/depth + parse'tan giysi
-silüeti + ürün fotoğrafı referansı. Çıktı data/items.py sözleşmesiyle yazılır:
+Per person: parser+openpose (agnostic+mask) → HMR2 (the pred_cam camera) →
+build_conditioning(garment=None): body-only normal/depth + the garment silhouette from
+the parse + the product photo reference. The output follows the data/items.py contract:
 
     {out}/{person_id}/gt.png agnostic.png mask.png normal.png depth_sil.png appearance_ref.png
 
-Kullanım:
+Usage:
   python v2/scripts/preprocess_vitonhd.py \\
       --images data/raw/images --cloth data/raw/cloth --idm-repo /content/IDM-VTON [--limit 20]
 
-Not: cloth/ dizini VITON-HD'nin düz ürün fotoğrafları (kişiyle aynı dosya adı).
-v1 Drive'ında yoksa VITON-HD zip'inden 'cloth' klasörü de açılmalı.
+Note: the cloth/ directory holds VITON-HD's flat product photos (same file name as the person).
+If it is missing from the v1 Drive, unpack the 'cloth' folder from the VITON-HD zip too.
 """
 
 from __future__ import annotations
@@ -38,13 +38,13 @@ ATR_GARMENT = (4, 7)  # upper_clothes, dress
 
 
 def garment_ref_from_person(image: np.ndarray, parse: np.ndarray, pad: float = 0.08) -> np.ndarray | None:
-    """Kişinin üzerindeki giysiyi parse maskesiyle kesip beyaz zemine koyar —
-    ürün fotoğrafı ikamesi. (H,W,3) uint8 döner; giysi bölgesi yoksa None."""
+    """Cuts the garment the person is wearing out with the parse mask and puts it on a white
+    background — a stand-in for the product photo. Returns (H,W,3) uint8; None if there is no garment region."""
     import cv2
 
     h, w = image.shape[:2]
     m = np.isin(cv2.resize(parse, (w, h), interpolation=cv2.INTER_NEAREST), ATR_GARMENT)
-    if m.mean() < 0.02:  # giysi bölgesi yok/çok küçük
+    if m.mean() < 0.02:  # no garment region / far too small
         return None
     ys, xs = np.where(m)
     py, px = int((ys.max() - ys.min()) * pad), int((xs.max() - xs.min()) * pad)
@@ -60,8 +60,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--images", type=Path, required=True)
     ap.add_argument("--cloth", type=Path, default=None,
-                    help="VITON-HD ürün fotoğrafları dizini (opsiyonel; yoksa referans "
-                         "kişinin ÜZERİNDEKİ giysiden parse maskesiyle kesilir)")
+                    help="VITON-HD product photo directory (optional; without it the reference "
+                         "is cut from the garment the person is WEARING using the parse mask)")
     ap.add_argument("--idm-repo", type=Path, required=True)
     ap.add_argument("--out", type=Path, default=None)
     ap.add_argument("--limit", type=int, default=None)
@@ -77,7 +77,7 @@ def main() -> int:
     if args.limit:
         images = images[: args.limit]
     if not images:
-        raise SystemExit(f"HATA: {args.images} altında görüntü yok")
+        raise SystemExit(f"ERROR: no images under {args.images}")
 
     prep = PersonPreprocessor(args.idm_repo)
     hmr2 = build_hmr2_backend()
@@ -85,7 +85,7 @@ def main() -> int:
     done, failed = 0, []
     for i, img_path in enumerate(images):
         item_dir = out / img_path.stem
-        if (item_dir / "depth_sil.png").exists():  # resume: bitmiş öğeyi atla
+        if (item_dir / "depth_sil.png").exists():  # resume: skip a finished item
             done += 1
             continue
         cloth_path = None
@@ -97,15 +97,15 @@ def main() -> int:
                 cloth_path = None
         try:
             pp = prep.process(img_path, size=size)
-            params = hmr2(pp.image, bbox=person_square_bbox(pp))  # kişi-merkezli kare (hizalama)
+            params = hmr2(pp.image, bbox=person_square_bbox(pp))  # person-centred square (alignment)
             if cloth_path is not None:
                 ref = np.asarray(Image.open(cloth_path).convert("RGB"))
             else:
-                # Ürün fotoğrafı yoksa: kişinin GİYDİĞİ giysiyi parse maskesiyle kes —
-                # süpervizyon yine tutarlı (referans = GT'deki giysinin kendisi)
+                # Without a product photo: cut the garment the person is WEARING with the parse
+                # mask — the supervision stays consistent (reference = the garment in the GT itself)
                 ref = garment_ref_from_person(pp.image, pp.parse)
                 if ref is None:
-                    failed.append(f"{img_path.stem}: parse'ta giysi bölgesi yok")
+                    failed.append(f"{img_path.stem}: no garment region in the parse")
                     continue
             bundle = build_conditioning(
                 pp.image, params, None, PhotoView(), size=size,
@@ -126,9 +126,9 @@ def main() -> int:
 
                 traceback.print_exc(file=sys.stderr)
         if (i + 1) % 25 == 0:
-            print(f"[{i+1}/{len(images)}] tamam={done} hata={len(failed)}")
+            print(f"[{i+1}/{len(images)}] done={done} errors={len(failed)}")
 
-    print(f"\nBitti: {done}/{len(images)} öğe → {out}; hata={len(failed)}")
+    print(f"\nFinished: {done}/{len(images)} items → {out}; errors={len(failed)}")
     for f in failed[:5]:
         print(f"  {f}", file=sys.stderr)
     return 0 if done else 1

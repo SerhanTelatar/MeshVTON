@@ -1,24 +1,24 @@
 #!/usr/bin/env python3
-"""Çıkarım kolları taraması — EĞİTİMSİZ kalite iyileştirmesi arayışı.
+"""Inference lever sweep — looking for quality gains WITHOUT training.
 
-Bağlam (2026-08-11): çıktı doğru yerde/boyutta ama düz ve yarı saydam. Elenenler:
-eğitim bütçesi (4000 adımlık koşu da solgundu, [[meshvton-v2-plan]]), guidance
-(1.0-15.0 arası etkisiz), kompozit (ham çıktı da düz), kamera, hizalama.
+Context (2026-08-11): the output is in the right place/size but flat and semi-transparent.
+Ruled out: the training budget (the 4000-step run was washed out too, [[meshvton-v2-plan]]),
+guidance (no effect between 1.0-15.0), compositing (the raw output is flat too), camera, alignment.
 
-Kalan iki HİÇ DENENMEMİŞ kol:
+Two levers remain that have NEVER been tried:
 
-1. control_scale > 1.0 — şimdiye dek yalnız 0.0 (ablation) ve 1.0 (eğitimdeki)
-   denendi. Kıvrım bilgisi zaten girdide var (control_normal drape edilmiş giysinin
-   normal haritası); model kullanmıyor olabilir, sinyali yükseltmek işe yarayabilir.
+1. control_scale > 1.0 — so far only 0.0 (ablation) and 1.0 (the training value) have been
+   tried. The fold information is already in the input (control_normal is the draped garment's
+   normal map); the model may not be using it, so amplifying the signal may help.
 
-2. geometry_mask=False — maske şu an parse ∪ dilate(silüet) ve %48'e çıkıyor; model
-   kolları/omuzları/boynu YENİDEN ÜRETMEK zorunda kalıyor (ten sorunu buradan).
-   False ile maske yalnız parser giysisi → ten ve kollar FOTOĞRAFTAN korunur.
-   Bedeli: yeni giysi eskisinden genişse maske dışına taşamaz, kırpılır.
+2. geometry_mask=False — the mask is currently parse ∪ dilate(silhouette) and reaches 48%; the
+   model is forced to REGENERATE the arms/shoulders/neck (the skin problem comes from there).
+   With False the mask is only the parser garment → skin and arms are preserved FROM THE PHOTO.
+   The cost: a new garment wider than the old one cannot spill outside the mask, it gets clipped.
 
-Difüzyon koşar ama tarama küçüktür (kol sayısı × varyant). Eğitim YOK.
+Diffusion does run, but the sweep is small (number of levers × variants). NO training.
 
-Kullanım:
+Usage:
   python v2/scripts/sweep_inference.py --checkpoint <Drive>/stage1/final.pt \\
       --idm-repo /content/IDM-VTON [--control-scale 1.0 1.5 2.0 3.0]
       [--person 00000_00] [--garment upper_body__00047_Top] [--steps 28]
@@ -84,22 +84,22 @@ def main() -> int:
     sampler = FluxTryOnSampler(base["model"]["flux_fill_repo"], checkpoint=args.checkpoint,
                                prompt=base["model"]["prompt"])
 
-    # İki maske rejimi için koşullama AYRI kurulur (maske build_conditioning içinde belirlenir)
+    # Conditioning is built SEPARATELY for the two mask regimes (the mask is decided inside build_conditioning)
     bundles = {}
     for gm in (True, False):
         bundles[gm] = build_conditioning(
             pp.image, params, asset, PhotoView(), size=size, person_prep=pp,
             hang_pad=PHOTO_HANG_PAD, garment_scale=PHOTO_GARMENT_SCALE, geometry_mask=gm)
 
-    print(f"kişi={pid} giysi={gid} steps={args.steps} seed={args.seed}")
+    print(f"person={pid} garment={gid} steps={args.steps} seed={args.seed}")
     for gm, b in bundles.items():
-        print(f"  geometry_mask={gm}: maske alanı = %{(b.inpaint_mask.numpy()[0] > 0.5).mean()*100:.1f}")
+        print(f"  geometry_mask={gm}: mask area = {(b.inpaint_mask.numpy()[0] > 0.5).mean()*100:.1f}%")
     print()
 
     H, W = size
     TH = 210
     hh = round(TH * H / W)
-    cols = 1 + len(args.control_scale)          # girdi + her control_scale
+    cols = 1 + len(args.control_scale)          # input + one per control_scale
     grid = Image.new("RGB", (TH * cols, hh * len(bundles)), "white")
     rows = []
     for r, (gm, b) in enumerate(bundles.items()):
@@ -108,21 +108,21 @@ def main() -> int:
         for c, cs in enumerate(args.control_scale):
             img = sampler.sample(b, steps=args.steps, seed=args.seed, control_scale=float(cs))
             Image.fromarray(img).save(out_dir / f"{pid}__{gid}__gm{int(gm)}_cs{cs:g}.png")
-            # maske-içi std: doku/kontrast vekili (guidance taramasındakiyle aynı ölçüt)
+            # in-mask std: a texture/contrast proxy (the same measure as in the guidance sweep)
             std = float(np.asarray(img, np.float32)[m].std())
             rows.append((gm, cs, std))
             grid.paste(Image.fromarray(img).resize((TH, hh), Image.LANCZOS), ((c + 1) * TH, r * hh))
-            print(f"  geometry_mask={gm} control_scale={cs:>4.1f} → maske-içi std={std:6.2f}")
+            print(f"  geometry_mask={gm} control_scale={cs:>4.1f} → in-mask std={std:6.2f}")
 
     sp = out_dir / f"{pid}__{gid}__sweep.png"
     grid.save(sp)
-    print(f"\nIzgara: {sp}")
-    print(f"  satırlar: geometry_mask=True (üst), False (alt)")
-    print(f"  sütunlar: girdi, " + ", ".join(f"cs={c:g}" for c in args.control_scale))
+    print(f"\nGrid: {sp}")
+    print(f"  rows: geometry_mask=True (top), False (bottom)")
+    print(f"  columns: input, " + ", ".join(f"cs={c:g}" for c in args.control_scale))
     best = max(rows, key=lambda r: r[2])
-    print(f"\nEN YÜKSEK DOKU: geometry_mask={best[0]} control_scale={best[1]:g} → {best[2]:.2f}")
-    print("NOT: std VEKİL bir ölçüt (gürültü de yükseltir). Kararı IZGARAYA BAKARAK verin:")
-    print("     kıvrım/kenar keskinleşiyor mu, yoksa artefakt mı?")
+    print(f"\nHIGHEST TEXTURE: geometry_mask={best[0]} control_scale={best[1]:g} → {best[2]:.2f}")
+    print("NOTE: std is a PROXY (noise raises it too). Make the call BY LOOKING AT THE GRID:")
+    print("      are the folds/edges getting sharper, or is it an artifact?")
     return 0
 
 

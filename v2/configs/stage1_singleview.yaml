@@ -1,33 +1,33 @@
-# Aşama 1 — tek görüş eğitimi (LoRA + zero-init kontrol embedder'ı)
-# base.yaml üzerine biner; train_stage1.py okur.
+# Stage 1 — single-view training (LoRA + the zero-init control embedder)
+# Layered on top of base.yaml; read by train_stage1.py.
 
 data:
-  real_root: v2/data/vitonhd_items      # preprocess_vitonhd.py çıktısı (yoksa sentetik-only, UYARI)
+  real_root: v2/data/vitonhd_items      # preprocess_vitonhd.py output (without it: synthetic-only, WARNING)
   synth_root: v2/data/synth
-  real_ratio: 0.7                       # gerçek:sentetik ≈ 70:30 (domain-gap sigortası)
-  batch_size: 4                         # A100-80GB'a checkpointing'le rahat sığar
-  num_workers: 8                        # PNG çözme GPU'yu bekletmesin (VM 12 vCPU)
+  real_ratio: 0.7                       # real:synthetic ≈ 70:30 (domain-gap insurance)
+  batch_size: 4                         # fits comfortably on an A100-80GB with checkpointing
+  num_workers: 8                        # PNG decoding must not stall the GPU (the VM has 12 vCPU)
 
 model:
   lora_rank: 64
   lora_alpha: 64
-  ref_dropout: 0.1        # görünüm referansını %10 gri yap → geometri kanalı yük taşımayı öğrenir
+  ref_dropout: 0.1        # grey out the appearance reference 10% of the time → the geometry channel learns to carry load
   train_guidance: 1.0
-  # compile KAPALI: torch.compile gradient checkpointing'i etkisizleştirip ilk
-  # backward'da 80GB'ı taşırdı (OOM, ölçüldü). Hız zaten latent önbelleğinden geliyor.
+  # compile OFF: torch.compile neutralized gradient checkpointing and blew past 80GB on the
+  # first backward (OOM, measured). The speed already comes from the latent cache.
   compile: false
 
 train:
-  # Ölçüldü (A100-80GB): bs2xaccum4 = 21.7s/adım -> 8k adım 48 saat, bütçeye fazla.
-  # bs4xaccum1 (efektif 4 — LoRA için standart) + 4k adım ≈ ~10 saat / 1 gece.
-  # 4k'da ablation kapısı koşulur; skorlar "daha pişmeli" derse resume'la devam.
+  # Measured (A100-80GB): bs2xaccum4 = 21.7s/step -> 8k steps is 48 hours, over budget.
+  # bs4xaccum1 (effective 4 — standard for LoRA) + 4k steps ≈ ~10 hours / one night.
+  # The ablation gate runs at 4k; if the scores say "needs more cooking", continue with resume.
   max_steps: 4000
   lr: 1.0e-4
   weight_decay: 0.01
   warmup_steps: 200
-  grad_accum: 1           # efektif batch 4
+  grad_accum: 1           # effective batch 4
   max_grad_norm: 1.0
-  ckpt_every: 100         # Drive'a; rotasyon son 2 ckpt'i tutar (kota koruması)
+  ckpt_every: 100         # to Drive; rotation keeps the last 2 ckpts (quota protection)
   keep_last: 2
   log_every: 25
   out_dir: v2/checkpoints/stage1

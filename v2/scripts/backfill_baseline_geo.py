@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Baseline tahminlerine geo_iou aux'larını GERİ-DOLDUR + eğitimli ckpt ile kıyasla.
+"""BACKFILL the geo_iou aux files for the baseline predictions + compare with a trained ckpt.
 
-Neden: zero_shot_baseline.py yalnız .person/.mask/.ref yazıyor; harness.evaluate'in
-geo_iou'su ise .predsil + .sil ister (harness.py::evaluate_item). Bu yüzden
-"eğitim baseline'ı yendi mi?" sorusu ölçülemiyordu — ablation kapısı yalnız
-kontrol AÇIK/KAPALI'yı kıyaslıyor, eğitimli-vs-eğitimsizi değil.
+Why: zero_shot_baseline.py only writes .person/.mask/.ref, while harness.evaluate's geo_iou
+needs .predsil + .sil (harness.py::evaluate_item). Because of that the question "did training
+beat the baseline?" was unmeasurable — the ablation gate only compares control ON/OFF, not
+trained vs untrained.
 
-Bu script MEVCUT baseline PNG'lerini yeniden üretmez (difüzyon koşmaz — GPU'da
-yalnız HMR2 + parser çalışır). Sadece eksik aux'ları yazıp raporu tazeler.
+This script does not regenerate the EXISTING baseline PNGs (no diffusion — only HMR2 + parser
+run on the GPU). It just writes the missing aux files and refreshes the report.
 
-Kullanım (Colab, A100):
+Usage (Colab, A100):
   python v2/scripts/backfill_baseline_geo.py --idm-repo /content/IDM-VTON
   [--variant fill_spatial] [--limit N] [--angles 0]
 """
@@ -35,14 +35,14 @@ from meshvton2.conditioning.person import PersonPreprocessor, person_square_bbox
 from meshvton2.eval import harness  # noqa: E402
 from meshvton2.eval.golden_set import load_manifest  # noqa: E402
 
-from eval_checkpoint import _save_predsil  # noqa: E402  (aynı parser yolu — tutarlılık şart)
+from eval_checkpoint import _save_predsil  # noqa: E402  (the same parser path — consistency is mandatory)
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--idm-repo", type=Path, required=True)
     ap.add_argument("--variant", default="fill_spatial")
-    ap.add_argument("--limit", type=int, default=0, help="0 = tüm kombolar")
+    ap.add_argument("--limit", type=int, default=0, help="0 = all combos")
     ap.add_argument("--angles", type=int, nargs="+", default=[0])
     args = ap.parse_args()
 
@@ -55,7 +55,7 @@ def main() -> int:
     out_root = REPO / base["paths"]["eval_results"]
     pred_dir = out_root / f"phase1_{args.variant}" / "preds"
     if not pred_dir.exists():
-        raise SystemExit(f"HATA: baseline tahminleri yok: {pred_dir}")
+        raise SystemExit(f"ERROR: no baseline predictions: {pred_dir}")
 
     prep = PersonPreprocessor(args.idm_repo)
     hmr2 = build_hmr2_backend()
@@ -63,7 +63,7 @@ def main() -> int:
     by_gid = {g.id: g for g in manifest.garments}
     combos = manifest.combos[: args.limit] if args.limit else manifest.combos
 
-    # Kişi başı prep+HMR2, giysi başı asset — kombo döngüsünde tekrar yok
+    # prep+HMR2 per person, asset per garment — no repeats inside the combo loop
     person_cache: dict[str, tuple] = {}
     asset_cache: dict[str, object] = {}
     done = skipped = missing = 0
@@ -75,27 +75,27 @@ def main() -> int:
                 person_id=person.id, garment_id=garment.id, angle=a)).with_suffix("")
             for a in args.angles
         }
-        # Tahmin PNG'si yoksa aux üretmenin anlamı yok
+        # There is no point producing aux files without a prediction PNG
         todo = {a: s for a, s in stems.items() if s.with_suffix(".png").exists()}
         missing += len(stems) - len(todo)
         if not todo:
             continue
-        # Her iki aux da varsa bu komboyu atla (resume-safe)
+        # Skip this combo if both aux files exist (resume-safe)
         if all(Path(f"{s}.sil.png").exists() and Path(f"{s}.predsil.png").exists()
                for s in todo.values()):
             skipped += len(todo)
-            print(f"[{i+1}/{len(combos)}] atlandı (aux tam) {person.id}×{garment.id}")
+            print(f"[{i+1}/{len(combos)}] skipped (aux complete) {person.id}×{garment.id}")
             continue
 
         try:
             if person.id not in person_cache:
                 pp = prep.process(manifest.root / person.image, size=size)
-                # person_square_bbox ŞART — tam-kare bbox off-center kişide mesh'i kaydırır
+                # person_square_bbox is MANDATORY — a full-frame bbox shifts the mesh for an off-centre person
                 person_cache[person.id] = (pp, hmr2(pp.image, bbox=person_square_bbox(pp)))
             pp, params = person_cache[person.id]
             if garment.id not in asset_cache:
-                # HAM asset — builder zaten force_textureless uyguluyor (builder.py:316,341);
-                # burada tekrar uygulamak eval_checkpoint yolundan sapma riski yaratır
+                # RAW asset — the builder already applies force_textureless (builder.py:316,341);
+                # applying it again here risks diverging from the eval_checkpoint path
                 asset_cache[garment.id] = load_garment_asset(
                     garments_root / garment.mesh,
                     texture_path=garments_root / garment.texture if garment.texture else None,
@@ -110,32 +110,32 @@ def main() -> int:
                     PhotoView() if angle == 0 else OrbitView(angle),
                     size=size, person_prep=pp,
                 )
-                # HEDEF silüet — eval_checkpoint.run_variant ile bit-eş aynı kaynak
+                # TARGET silhouette — bit-identical source to eval_checkpoint.run_variant
                 sil = (bundle.control_depth_sil[2].numpy() > 0).astype("uint8") * 255
                 Image.fromarray(sil).save(f"{stem}.sil.png")
-                _save_predsil(prep, stem)  # ÜRETİLEN görüntünün giysi bölgesi (parser)
+                _save_predsil(prep, stem)  # the garment region of the GENERATED image (parser)
                 done += 1
             print(f"[{i+1}/{len(combos)}] OK {person.id}×{garment.id}")
         except Exception as e:
-            print(f"[{i+1}/{len(combos)}] HATA {person.id}×{garment.id}: {e}", file=sys.stderr)
+            print(f"[{i+1}/{len(combos)}] ERROR {person.id}×{garment.id}: {e}", file=sys.stderr)
 
-    print(f"\naux yazıldı={done} atlandı={skipped} tahmin-yok={missing}")
+    print(f"\naux written={done} skipped={skipped} no-prediction={missing}")
 
-    # Raporu tazele + eğitimli checkpoint'le kıyasla
+    # Refresh the report + compare against the trained checkpoint
     summary = harness.evaluate(manifest, pred_dir, cfg["pred_pattern"])
     report = out_root / f"phase1_{args.variant}.json"
     harness.write_report(summary, report)
-    print(f"rapor güncellendi: {report}")
+    print(f"report updated: {report}")
 
     get = lambda s, k: (s["overall"].get(k) or {}).get("mean")
     rows = {(r["person"], r["garment"], r["angle"]): r for r in summary["rows"]}
-    print("\n=== EĞİTİM vs BASELINE (geo_iou, yüksek iyi) ===")
+    print("\n=== TRAINING vs BASELINE (geo_iou, higher is better) ===")
     base_all = get(summary, "geo_iou")
-    print(f"baseline (tüm {summary['found']} kombo): {base_all}")
+    print(f"baseline (all {summary['found']} combos): {base_all}")
     for tag in ("control_on", "control_off"):
         ck = out_root / f"ckpt_{tag}.json"
         if not ck.exists():
-            print(f"{tag}: rapor yok ({ck})")
+            print(f"{tag}: no report ({ck})")
             continue
         c = json.loads(ck.read_text())
         crows = {(r["person"], r["garment"], r["angle"]): r for r in c["rows"]}
@@ -144,10 +144,10 @@ def main() -> int:
         cv = [crows[k]["geo_iou"] for k in shared if crows[k].get("geo_iou") is not None]
         if len(bv) == len(cv) == len(shared) and shared:
             b_m, c_m = float(np.mean(bv)), float(np.mean(cv))
-            print(f"{tag}: ortak {len(shared)} kombo — baseline={b_m:.4f} ckpt={c_m:.4f} "
-                  f"Δ={c_m - b_m:+.4f}  {'EĞİTİM İYİ' if c_m > b_m else 'EĞİTİM KÖTÜ'}")
+            print(f"{tag}: {len(shared)} shared combos — baseline={b_m:.4f} ckpt={c_m:.4f} "
+                  f"Δ={c_m - b_m:+.4f}  {'TRAINING BETTER' if c_m > b_m else 'TRAINING WORSE'}")
         else:
-            print(f"{tag}: ortak kombo yok ya da geo_iou eksik (baseline {len(bv)}/{len(shared)}, "
+            print(f"{tag}: no shared combos or geo_iou missing (baseline {len(bv)}/{len(shared)}, "
                   f"ckpt {len(cv)}/{len(shared)})")
     return 0
 

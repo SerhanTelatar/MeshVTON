@@ -1,4 +1,4 @@
-"""Faz 1 saf yardımcılarının lokal testleri (GPU/pytorch3d/diffusers gerektirmez)."""
+"""Local tests for the Phase 1 pure helpers (no GPU/pytorch3d/diffusers required)."""
 
 import numpy as np
 import pytest
@@ -28,7 +28,7 @@ def test_side_mask_reference_half_is_zero():
     mask = np.full((8, 6), 255, np.uint8)
     cmask = make_side_mask(mask)
     assert cmask.shape == (8, 12)
-    assert cmask[:, :6].sum() == 0  # referans yarısı asla inpaint edilmez
+    assert cmask[:, :6].sum() == 0  # the reference half is never inpainted
     assert (cmask[:, 6:] == 255).all()
 
 
@@ -38,8 +38,8 @@ def test_composite_outside_mask_preserves_original():
     mask = np.zeros((32, 32), np.uint8)
     mask[8:24, 8:24] = 255
     out = composite_outside_mask(pred, orig, mask)
-    assert out[0, 0].tolist() == [0, 0, 0]        # maske dışı = orijinal
-    assert out[16, 16].tolist() == [255, 255, 255]  # maske içi = tahmin
+    assert out[0, 0].tolist() == [0, 0, 0]        # outside the mask = the original
+    assert out[16, 16].tolist() == [255, 255, 255]  # inside the mask = the prediction
 
 
 def test_apply_agnostic():
@@ -49,7 +49,7 @@ def test_apply_agnostic():
     out = apply_agnostic(img, mask)
     assert out[3, 3].tolist() == [128, 128, 128]
     assert out[0, 0].tolist() == [50, 50, 50]
-    assert img[3, 3].tolist() == [50, 50, 50]  # girdi mutasyonu yok
+    assert img[3, 3].tolist() == [50, 50, 50]  # no input mutation
 
 
 def test_zup_to_yup():
@@ -71,13 +71,13 @@ def test_find_sibling_texture(tmp_path):
     obj.write_text("v 0 0 0\n")
     assert find_sibling_texture(obj) is None
     (tmp_path / "random.png").write_bytes(b"x")
-    assert find_sibling_texture(obj).endswith("random.png")  # klasördeki tek görüntü
+    assert find_sibling_texture(obj).endswith("random.png")  # the only image in the folder
     (tmp_path / "model.png").write_bytes(b"x")
-    assert find_sibling_texture(obj).endswith("model.png")  # aynı ad öncelikli
+    assert find_sibling_texture(obj).endswith("model.png")  # the same name takes priority
 
 
 def test_pick_garments_nested_categories(tmp_path):
-    """CLOTH3D Drive düzeni: garments_3d/kategori/giysi/model.obj (+texture)."""
+    """CLOTH3D Drive layout: garments_3d/category/garment/model.obj (+texture)."""
     import importlib.util
     from pathlib import Path
 
@@ -91,25 +91,25 @@ def test_pick_garments_nested_categories(tmp_path):
     (tmp_path / "upper_body/g1/model.obj").write_text("v 0 0 0\n")
     (tmp_path / "upper_body/g1/tex.png").write_bytes(b"x")
     (tmp_path / "upper_body/g2").mkdir(parents=True)
-    (tmp_path / "upper_body/g2/model.obj").write_text("v 0 0 0\n")  # texturesiz — yine de dahil
+    (tmp_path / "upper_body/g2/model.obj").write_text("v 0 0 0\n")  # untextured — still included
     (tmp_path / "dresses/g3").mkdir(parents=True)
     (tmp_path / "dresses/g3/model.obj").write_text("v 0 0 0\n")
     (tmp_path / "dresses/g3/g3.png").write_bytes(b"x")
 
     picked = mod.pick_garments(tmp_path, None)
     ids = [g.id for g in picked]
-    # YALNIZ upper_body: drape/askı mantığı üst-vücut için ayarlı, diğer split'lerde
-    # tip kontrolü yok (Trousers/Skirt/Dress karışır) — 2026-08-09 kısıtı.
+    # ONLY upper_body: the drape/hang logic is tuned for the upper body, and the other splits
+    # have no type check (Trousers/Skirt/Dress get mixed in) — the 2026-08-09 constraint.
     assert ids == ["upper_body__g1", "upper_body__g2"]
     assert "dresses__g3" not in ids
     g1 = picked[ids.index("upper_body__g1")]
     assert g1.mesh == "upper_body/g1/model.obj" and g1.category == "upper_body"
     g2 = picked[ids.index("upper_body__g2")]
-    assert g2.texture is None                            # texture şart değil (KALICI kural)
+    assert g2.texture is None                            # a texture is not required (PERMANENT rule)
 
 
 def test_garment_ref_from_person(tmp_path):
-    """Ürün fotoğrafı yoksa referans kişinin üzerindeki giysiden kesilir (beyaz zemin)."""
+    """Without a product photo the reference is cut from the garment on the person (white background)."""
     import importlib.util
     from pathlib import Path
 
@@ -120,13 +120,13 @@ def test_garment_ref_from_person(tmp_path):
     spec.loader.exec_module(mod)
 
     img = np.full((100, 80, 3), 30, np.uint8)
-    parse = np.zeros((50, 40), np.uint8)   # düşük çözünürlüklü parse (gerçekte 512x384)
-    parse[10:30, 10:30] = 4                # upper_clothes bölgesi
-    img[20:60, 20:60] = (200, 40, 40)      # giysi pikselleri kırmızı
+    parse = np.zeros((50, 40), np.uint8)   # low-resolution parse (512x384 in reality)
+    parse[10:30, 10:30] = 4                # the upper_clothes region
+    img[20:60, 20:60] = (200, 40, 40)      # the garment pixels are red
 
     ref = mod.garment_ref_from_person(img, parse)
     assert ref is not None and ref.ndim == 3
-    assert (ref == 255).all(axis=2).any()          # beyaz zemin var
-    assert (ref[..., 0] > 150).sum() > 100         # giysi pikselleri taşınmış
+    assert (ref == 255).all(axis=2).any()          # there is a white background
+    assert (ref[..., 0] > 150).sum() > 100         # the garment pixels were carried over
 
-    assert mod.garment_ref_from_person(img, np.zeros((50, 40), np.uint8)) is None  # giysi yok
+    assert mod.garment_ref_from_person(img, np.zeros((50, 40), np.uint8)) is None  # no garment
