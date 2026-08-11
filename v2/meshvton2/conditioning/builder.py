@@ -69,6 +69,12 @@ PHOTO_HANG_PAD = -0.12
 # geçmişte iki kez hata çıktı (bkz. _prealign_garment ders zinciri).
 PHOTO_GARMENT_SCALE = 1.25
 
+# use_texture: KALICI KURAL gereği varsayılan False — appearance ref her zaman düz gri
+# (renk/desen sadakati bu projenin hedefi değil). TEK meşru kullanımı: 2026-07-06'da
+# texture'lı ref + VITON-HD karışımıyla eğitilmiş ESKİ checkpoint'i (stage1_july/
+# ckpt_004000.pt) çalıştırmak — o ağırlıklar texture'lı ref görmeye alışkın, gri ref
+# verilirse dağıtım-DIŞI girdi alır. Yeni/dokusuz checkpoint'lerde ASLA True yapma.
+
 
 def implementation() -> str:
     """"real" | "stub" — her çağrıda env'den okunur (test izolasyonu için)."""
@@ -179,6 +185,7 @@ def build_conditioning(
     geometry_mask: bool = True,  # foto+mesh: maske = parse ∪ dilate(giysi silüeti); False = yalnız parse
     hang_pad: float = DEFAULT_HANG_PAD,  # giysi üst kenarı askı payı [m] (bkz. DEFAULT_HANG_PAD)
     garment_scale: float = 1.0,  # 1.0 = CLOTH3D metrik ölçeği (bkz. _prealign_garment)
+    use_texture: bool = False,  # KURAL GEREĞİ False — bkz. use_texture notu yukarıda
 ) -> ConditioningBundle:
     """Koşullama demetini üretir.
 
@@ -224,6 +231,7 @@ def build_conditioning(
         person_image, smplx_params, garment, view, size=size, device=device,
         person_prep=person_prep, appearance_ref_image=appearance_ref_image,
         geometry_mask=geometry_mask, hang_pad=hang_pad, garment_scale=garment_scale,
+        use_texture=use_texture,
     )
 
 
@@ -309,7 +317,7 @@ ATR_GARMENT_LABELS = (4, 7)  # upper_clothes, dress — parse'tan giysi silüeti
 def _build_impl_real(
     person_image, smplx_params, garment, view, *, size, device,
     person_prep=None, appearance_ref_image=None, geometry_mask=True, hang_pad=DEFAULT_HANG_PAD,
-    garment_scale=1.0,
+    garment_scale=1.0, use_texture=False,
 ):
     import cv2
 
@@ -356,7 +364,9 @@ def _build_impl_real(
         # gri kumaşlı ŞEKİLLİ render'dır (düz gri kart değil: giysinin formu modele
         # geçer, renk/desen bilgisi asla geçmez), garment.texture var olsun ya da
         # olmasın (bkz. proje kuralı: appearance sadakati hedef değil).
-        appearance01 = render_appearance_ref(force_textureless(garment), size=size).astype(np.float32) / 255.0
+        # use_texture=True YALNIZ eski texture'lı checkpoint için (bkz. sabit notu)
+        g_app = garment if use_texture else force_textureless(garment)
+        appearance01 = render_appearance_ref(g_app, size=size).astype(np.float32) / 255.0
         meta.update(garment_id=garment.garment_id, clearance_ratio=clearance_ratio,
                     penetration_depth=pen_depth, drape_extent_ratio=extent_ratio)
     else:
@@ -381,7 +391,7 @@ def _build_impl_real(
         # akış-eşleme kaybının optimumu koşullu ORTALAMA = solgun/yarı saydam leke.
         # Görev ancak hedef de gri olunca öğrenilebilir hale gelir.
         gt = render_textured_scene(body["verts"], body["faces"], skin, gverts,
-                                   force_textureless(garment), cam, size=size)
+                                   g_app, cam, size=size)
         kernel = np.ones((wdt // 30, wdt // 30), np.uint8)
         mask_u8 = cv2.dilate((geo["garment_sil"] * 255).astype(np.uint8), kernel)
         agnostic = gt.copy()
