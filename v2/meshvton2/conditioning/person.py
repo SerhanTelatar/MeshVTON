@@ -29,70 +29,20 @@ from PIL import Image
 _PREP_SIZE = (384, 512)  # (W,H)
 GRAY = 128
 
-# ATR parser'da CİLT etiketleri: yüz, bacaklar, kollar (giysi/saç/ayakkabı hariç).
-# Ten rengi ÖRNEKLEMESİ için: maske dışında kalan görünür cilt.
-ATR_SKIN_LABELS = (11, 12, 13, 14, 15)
-DEFAULT_SKIN = (204, 158, 133)  # örnekleme başarısızsa nötr orta ton
-
-# Agnostic dolgusu TEN RENGİ mi, düz gri mi?
-#
-# False (varsayılan) = düz gri — MEVCUT final.pt bu rejimle eğitildi. Bugün True
-# yapılırsa checkpoint dağıtım-DIŞI girdi alır ve çıktı sessizce kötüleşir.
-#
-# True yapmanın ÖN KOŞULU (üçü birden, aksi hâlde parite sözleşmesi kırılır):
-#   1. sentetik veriyi YENİDEN üret (DATA_VERSION 7; ~3 saat) — üretici zaten
-#      örnek başına rastgele ten kullanıyor (synth/generate.py::sample_skin),
-#   2. Aşama-1'i YENİDEN eğit (mevcut latest.pt bu rejimde geçersiz),
-#   3. bu bayrağı True yap — sentetik ve foto yolları AYNI anda değişsin.
-#
-# Neden gerekli: eski giysinin kapladığı ama yeni mesh'in örtmediği alanlar kişinin
-# teninde üretilmeli. Eski rejimde model hedef ten hakkında hiçbir sinyal almıyordu
-# (gövde tek sabit bej ile render, dolgu düz gri) → teni o tondan uzak kişilerde
-# sistematik yanlılık (2026-08-10 teşhisi).
-AGNOSTIC_SKIN_FILL = False
-
 
 @dataclass
 class PersonPrep:
     image: np.ndarray      # (H,W,3) uint8 RGB — hedef boyutta kişi
-    agnostic: np.ndarray   # (H,W,3) uint8 RGB — maske içi dolgu (bkz. AGNOSTIC_SKIN_FILL)
+    agnostic: np.ndarray   # (H,W,3) uint8 RGB — maske içi gri
     mask: np.ndarray       # (H,W) uint8 {0,255} — 255 = inpaint (giysi) bölgesi
     parse: np.ndarray      # (Hp,Wp) uint8 — ham parsing etiketleri (384x512)
     keypoints: dict        # openpose çıktısı ("pose_keypoints_2d")
-    skin_rgb: tuple = DEFAULT_SKIN  # kişinin görünür cildinden örneklenen medyan ton
 
 
-def sample_skin_rgb(image: np.ndarray, parse: np.ndarray) -> tuple[int, int, int]:
-    """Kişinin GÖRÜNÜR cildinden medyan RGB. Medyan (ortalama değil) çünkü gölge/
-    parlama uç değerleri ortalamayı kaydırıyor.
-
-    Neden gerekli (2026-08-10): eski giysinin kapladığı ama yeni mesh'in örtmediği
-    alanların kişinin TENİNDE üretilmesi gerekir. Sentetik eğitimde gövde tek sabit
-    bej tonla render ediliyordu (builder.py) ve agnostic dolgusu düz griydi — yani
-    model hedef ten rengine dair HİÇBİR sinyal almıyordu, tahmin etmek zorundaydı.
-    Bu, teni o sabit tondan uzak kişilerde sistematik yanlılık üretiyordu.
-    """
-    if parse.shape[:2] != image.shape[:2]:
-        import cv2
-
-        parse = cv2.resize(parse, (image.shape[1], image.shape[0]),
-                           interpolation=cv2.INTER_NEAREST)
-    m = np.isin(parse, ATR_SKIN_LABELS)
-    if m.sum() < 50:  # cilt görünmüyor (kapalı giysi/kırpma) — nötr tona düş
-        return DEFAULT_SKIN
-    med = np.median(image[m].reshape(-1, 3), axis=0)
-    return tuple(int(v) for v in med)
-
-
-def apply_agnostic(image: np.ndarray, mask: np.ndarray,
-                   fill: int | tuple = GRAY) -> np.ndarray:
-    """Maske içini `fill` ile doldur — saf numpy, testlenebilir.
-
-    fill artık 3'lü RGB de olabilir: ten rengi dolgusu modele hedef teni OKUTUR
-    (bkz. sample_skin_rgb). Skaler değer eski davranışı korur (nötr gri).
-    """
+def apply_agnostic(image: np.ndarray, mask: np.ndarray, fill: int = GRAY) -> np.ndarray:
+    """Maske içini nötr griyle doldur — saf numpy, testlenebilir."""
     out = image.copy()
-    out[mask > 127] = (fill, fill, fill) if np.isscalar(fill) else tuple(fill)
+    out[mask > 127] = (fill, fill, fill)
     return out
 
 
@@ -180,16 +130,10 @@ class PersonPreprocessor:
             raise RuntimeError("Boş inpaint maskesi — parsing/pose başarısız (kişi tespit edilemedi?)")
 
         img = np.asarray(pil)
-        parse = np.asarray(model_parse, dtype=np.uint8)
-        # Ten rengi maske DIŞINDAKİ görünür ciltten örneklenir (yüz/kol/bacak) ve
-        # agnostic dolgusu olarak kullanılır: model hedef teni tahmin etmek yerine
-        # okur. Sentetik yol da aynı rejimi kullanır (builder.py) — parite şart.
-        skin = sample_skin_rgb(img, parse)  # bayrak kapalıyken de RAPORLANIR
         return PersonPrep(
             image=img,
-            agnostic=apply_agnostic(img, mask, fill=skin if AGNOSTIC_SKIN_FILL else GRAY),
+            agnostic=apply_agnostic(img, mask),
             mask=mask,
-            parse=parse,
+            parse=np.asarray(model_parse, dtype=np.uint8),
             keypoints=keypoints,
-            skin_rgb=skin,
         )
