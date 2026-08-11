@@ -1,5 +1,5 @@
-# MeshVTON v2 — v1'den TAMAMEN bağımsız ortam (v1 pinleriyle asla karıştırma).
-# Python >= 3.10. Colab'da: pip install -r v2/requirements.txt
+# MeshVTON v2 — an environment COMPLETELY independent of v1 (never mix it with the v1 pins).
+# Python >= 3.10. On Colab: pip install -r v2/requirements.txt
 torch>=2.4
 torchvision
 diffusers>=0.34
@@ -19,11 +19,11 @@ pyyaml
 tqdm
 pytest
 
-# --- 3D: Faz 1 (hafif, derleme yok) ---
+# --- 3D: Phase 1 (lightweight, no compilation) ---
 trimesh>=4
-pyrender          # appearance-ref render backend'i (EGL headless; pytorch3d GEREKMEZ)
+pyrender          # the appearance-ref render backend (EGL headless; pytorch3d NOT required)
 
-# --- 3D: Faz 2+ (CUDA gerektirir, ayrı kurulum) ---
-# pip install "git+https://github.com/facebookresearch/pytorch3d.git"   # derleme ~20-40 dk
+# --- 3D: Phase 2+ (requires CUDA, installed separately) ---
+# pip install "git+https://github.com/facebookresearch/pytorch3d.git"   # ~20-40 min compile
 # pip install smplx>=0.1.28
 # pip install "git+https://github.com/shubham-goel/4D-Humans.git"   # HMR2

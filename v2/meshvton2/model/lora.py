@@ -1,24 +1,24 @@
-"""LoRA bağlama + eğitilebilir-durum yardımcıları (peft; import'lar tembel).
+"""LoRA attachment + trainable-state helpers (peft; the imports are lazy).
 
-Eğitilebilir küme = LoRA katmanları + ControlXEmbedder.control_proj. Checkpoint
-sözlüğü transformer.named_parameters() üzerinden requires_grad filtresiyle
-toplanır — LoRA ve kontrol sidecar'ı tek dosyada, isim uzayı doğal.
+The trainable set = the LoRA layers + ControlXEmbedder.control_proj. The checkpoint dict is
+gathered from transformer.named_parameters() with a requires_grad filter — LoRA and the
+control sidecar live in one file, with a natural namespace.
 """
 
 from __future__ import annotations
 
 import torch
 
-# FLUX blokları için standart hedefler: dikkat projeksiyonları + FF (iki akış da
-# to_q/to_k/to_v/to_out kullanır; diffusers FLUX LoRA eğitim tarifleriyle uyumlu)
+# Standard targets for the FLUX blocks: the attention projections + FF (both streams use
+# to_q/to_k/to_v/to_out; consistent with the diffusers FLUX LoRA training recipes)
 DEFAULT_TARGETS = ("to_q", "to_k", "to_v", "to_out.0", "ff.net.0.proj", "ff.net.2")
 
 
 def _silence_torchao_check() -> None:
-    """peft'in torchao sürüm denetimi, torchao YÜKLÜ ama <0.16 ise (Colab imajı)
-    ImportError RAISE ediyor — oysa False dönmeliydi. torchao KULLANMIYORUZ;
-    her iki bağlanma noktasında da is_torchao_available -> False (kalıcı, pip'e
-    bağımlı değil; uninstall her oturum tekrarı gerekmez)."""
+    """peft's torchao version check RAISES an ImportError when torchao is INSTALLED but <0.16
+    (the Colab image) — it should have returned False instead. We do NOT USE torchao;
+    at both hook points is_torchao_available -> False (permanent, not dependent on pip;
+    no need to repeat an uninstall every session)."""
     import importlib
 
     for modname in ("peft.import_utils", "peft.tuners.lora.torchao"):
@@ -31,7 +31,7 @@ def _silence_torchao_check() -> None:
 
 
 def attach_lora(transformer, *, rank: int = 64, alpha: int = 64, targets=DEFAULT_TARGETS):
-    """FluxTransformer2DModel'e LoRA ekler (diffusers PeftAdapterMixin.add_adapter)."""
+    """Adds LoRA to a FluxTransformer2DModel (diffusers PeftAdapterMixin.add_adapter)."""
     _silence_torchao_check()
     from peft import LoraConfig
 
@@ -58,7 +58,7 @@ def load_trainable_state(module: torch.nn.Module, state: dict[str, torch.Tensor]
     own = dict(module.named_parameters())
     missing = [n for n in state if n not in own]
     if missing:
-        raise KeyError(f"Checkpoint'te modelde olmayan {len(missing)} anahtar (ilk: {missing[0]})")
+        raise KeyError(f"{len(missing)} keys in the checkpoint that the model does not have (first: {missing[0]})")
     with torch.no_grad():
         for n, w in state.items():
             own[n].copy_(w.to(own[n].dtype))

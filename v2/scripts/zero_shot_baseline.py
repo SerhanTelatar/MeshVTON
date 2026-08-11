@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Faz 1 — Zero-shot taban çizgisi (eğitimsiz FLUX).
+"""Phase 1 — Zero-shot baseline (untrained FLUX).
 
-Golden set'in her (kişi, giysi) kombosu için (yalnız 0° = foto görüşü; orbit
-görüşler Faz 2 kamerasını gerektirir):
-  1. Görünüm referansı: giysinin flat-lit dokulu ön render'ı (pytorch3d)
-  2. Agnostic + maske: PersonPreprocessor (IDM-VTON preprocess, densepose YOK)
-  3. FluxTryOn(variant) ile üretim
-  4. Tahmin + aux dosyaları eval sözleşmesiyle yazılır, harness koşulur, grid PNG
+For every (person, garment) combo in the golden set (0° = the photo view only; the orbit
+views require the Phase 2 camera):
+  1. Appearance reference: a flat-lit textured front render of the garment (pytorch3d)
+  2. Agnostic + mask: PersonPreprocessor (IDM-VTON preprocess, NO densepose)
+  3. Generation with FluxTryOn(variant)
+  4. The prediction + aux files are written per the eval contract, the harness runs, grid PNG
 
-Kullanım (Colab, GPU):
+Usage (Colab, GPU):
   python v2/scripts/zero_shot_baseline.py --variant fill_spatial --idm-repo /content/IDM-VTON
   python v2/scripts/zero_shot_baseline.py --variant kontext      --idm-repo /content/IDM-VTON
-  # hızlı duman testi: --limit 4
+  # quick smoke test: --limit 4
 """
 
 from __future__ import annotations
@@ -38,12 +38,12 @@ from meshvton2.model.flux_tryon import VARIANTS, FluxTryOn  # noqa: E402
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--variant", choices=VARIANTS, required=True)
-    ap.add_argument("--idm-repo", type=Path, required=True, help="Clone'lanmış IDM-VTON yolu (preprocess için)")
+    ap.add_argument("--idm-repo", type=Path, required=True, help="Path to the cloned IDM-VTON (for preprocess)")
     ap.add_argument("--manifest", type=Path, default=None)
-    ap.add_argument("--limit", type=int, default=None, help="İlk N kombo (duman testi)")
+    ap.add_argument("--limit", type=int, default=None, help="First N combos (smoke test)")
     ap.add_argument("--steps", type=int, default=28)
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--offload", action="store_true", help="CPU offload (düşük VRAM)")
+    ap.add_argument("--offload", action="store_true", help="CPU offload (low VRAM)")
     args = ap.parse_args()
 
     base = yaml.safe_load((REPO / "v2/configs/base.yaml").read_text())
@@ -64,7 +64,7 @@ def main() -> int:
         steps=args.steps,
     )
 
-    # Önbellekler: kişi başı prep, giysi başı appearance ref (kombo döngüsünde tekrar yok)
+    # Caches: prep per person, appearance ref per garment (no repeats inside the combo loop)
     prep_cache: dict[str, object] = {}
     ref_cache: dict[str, np.ndarray] = {}
     combos = manifest.combos[: args.limit] if args.limit else manifest.combos
@@ -93,33 +93,33 @@ def main() -> int:
             stem = pred_dir / cfg["pred_pattern"].format(
                 person_id=person.id, garment_id=garment.id, angle=0
             )
-            stem = stem.with_suffix("")  # .png pattern'den gelir
+            stem = stem.with_suffix("")  # the .png comes from the pattern
             Image.fromarray(pred).save(stem.with_suffix(".png"))
             Image.fromarray(pp.image).save(f"{stem}.person.png")
             Image.fromarray(pp.mask).save(f"{stem}.mask.png")
             Image.fromarray(ref).save(f"{stem}.ref.png")
             done += 1
             print(f"[{i+1}/{len(combos)}] {person.id} × {garment.id} OK")
-        except Exception as e:  # tek kombo hatası koşuyu öldürmesin, ama SAKLANMASIN
+        except Exception as e:  # one failing combo must not kill the run, but must not be HIDDEN either
             failed.append(f"{person.id}×{garment.id}: {e}")
-            print(f"[{i+1}/{len(combos)}] HATA {person.id}×{garment.id}: {e}", file=sys.stderr)
-            if len(failed) == 1:  # ilk hatanın tam traceback'i — teşhis için
+            print(f"[{i+1}/{len(combos)}] ERROR {person.id}×{garment.id}: {e}", file=sys.stderr)
+            if len(failed) == 1:  # full traceback of the first error — for diagnosis
                 import traceback
 
                 traceback.print_exc(file=sys.stderr)
 
-    # Değerlendirme + grid
+    # Evaluation + grid
     summary = harness.evaluate(manifest, pred_dir, cfg["pred_pattern"])
     summary["failed"] = failed
     harness.write_report(summary, out_root / f"phase1_{args.variant}.json")
     _save_grid(pred_dir, out_root / f"phase1_{args.variant}_grid.png")
-    print(f"\n{done}/{len(combos)} üretildi, {len(failed)} hata.")
-    print(f"Rapor: {out_root / f'phase1_{args.variant}.json'} (+.md), grid: {out_root / f'phase1_{args.variant}_grid.png'}")
+    print(f"\n{done}/{len(combos)} generated, {len(failed)} errors.")
+    print(f"Report: {out_root / f'phase1_{args.variant}.json'} (+.md), grid: {out_root / f'phase1_{args.variant}_grid.png'}")
     return 0 if done else 1
 
 
 def _save_grid(pred_dir: Path, out_path: Path, cols: int = 5, thumb_w: int = 256) -> None:
-    preds = sorted(p for p in pred_dir.glob("*.png") if len(p.name.split(".")) == 2)  # aux hariç
+    preds = sorted(p for p in pred_dir.glob("*.png") if len(p.name.split(".")) == 2)  # aux excluded
     if not preds:
         return
     thumbs = []

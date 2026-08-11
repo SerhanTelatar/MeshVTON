@@ -1,7 +1,7 @@
-"""Görüntü I/O ve dönüşüm yardımcıları (v1 src/utils/image_utils.py'den uyarlandı).
+"""Image I/O and conversion helpers (adapted from v1 src/utils/image_utils.py).
 
-v2 sözleşmesi: tensörler (C,H,W) float32; RGB görüntüler [-1,1], maskeler {0,1}.
-Boyut her zaman (height, width) sırasıyla verilir ve LANCZOS ile yeniden örneklenir.
+The v2 contract: tensors are (C,H,W) float32; RGB images [-1,1], masks {0,1}.
+Sizes are always given in (height, width) order and resampled with LANCZOS.
 """
 
 from __future__ import annotations
@@ -42,11 +42,11 @@ def pil_to_tensor(image: Image.Image, size: tuple[int, int] | None = None) -> to
 
 
 def tensor_to_pil(tensor: torch.Tensor) -> Image.Image:
-    """(C,H,W) veya (1,C,H,W), [-1,1] veya [0,1] -> PIL."""
+    """(C,H,W) or (1,C,H,W), [-1,1] or [0,1] -> PIL."""
     if tensor.dim() == 4:
         tensor = tensor[0]
     t = tensor.detach().float().cpu()
-    if t.min() < -0.01:  # [-1,1] varsay
+    if t.min() < -0.01:  # assume [-1,1]
         t = (t.clamp(-1, 1) + 1) / 2
     arr = (t.clamp(0, 1).permute(1, 2, 0).numpy() * 255).round().astype(np.uint8)
     if arr.shape[2] == 1:
@@ -55,7 +55,7 @@ def tensor_to_pil(tensor: torch.Tensor) -> Image.Image:
 
 
 def load_mask(path: str | Path, size: tuple[int, int] | None = None) -> torch.Tensor:
-    """Gri maske dosyası -> (1,H,W) float32 {0,1} (eşik 127, NEAREST resize)."""
+    """A greyscale mask file -> (1,H,W) float32 {0,1} (threshold 127, NEAREST resize)."""
     img = Image.open(path).convert("L")
     if size is not None:
         h, w = size
@@ -65,7 +65,7 @@ def load_mask(path: str | Path, size: tuple[int, int] | None = None) -> torch.Te
 
 
 def to_uint8_rgb(image: torch.Tensor | np.ndarray | Image.Image) -> np.ndarray:
-    """Her formatı (H,W,3) uint8 RGB'ye indirger — metrik girişleri bunu kullanır."""
+    """Reduces any format to (H,W,3) uint8 RGB — the metric inputs use this."""
     if isinstance(image, Image.Image):
         return np.asarray(image.convert("RGB"))
     if isinstance(image, torch.Tensor):

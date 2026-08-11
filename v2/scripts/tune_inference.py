@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Inference ayar taraması (EĞİTİM YOK) — guidance/adım renk sadakatini düzeltir mi?
+"""Inference tuning sweep (NO TRAINING) — do guidance/steps fix the color fidelity?
 
-final.pt'yi bir kez yükler, birkaç kombo için birkaç guidance değerinde örnekler,
-etiketli bir karşılaştırma grid'i yazar. Solgun renk çaresi guidance olabilir
-(FLUX Fill guidance-damıtılmış; eğitim 1.0, baseline 30 kullanmıştı).
+It loads final.pt once, samples a few combos at a few guidance values and writes a labelled
+comparison grid. The cure for the washed-out color may be guidance (FLUX Fill is
+guidance-distilled; training used 1.0, the baseline used 30).
 
-Kullanım (Colab, A100):
+Usage (Colab, A100):
   python v2/scripts/tune_inference.py \\
       --checkpoint /content/drive/MyDrive/MeshVTON/v2_outputs/stage1/final.pt \\
       --idm-repo /content/IDM-VTON --guidances 1 3.5 7.5 15 30 --combos 3
@@ -64,7 +64,7 @@ def main() -> int:
     by_pid = {p.id: p for p in manifest.persons}
     by_gid = {g.id: g for g in manifest.garments}
 
-    # Desen çeşitliliği için ilk N FARKLI giysili kombo (aynı kişide farklı giysiler)
+    # For pattern diversity, the first N combos with DIFFERENT garments (different garments on the same person)
     combos, seen_g = [], set()
     for combo in manifest.combos:
         if combo.garment_id in seen_g:
@@ -72,7 +72,7 @@ def main() -> int:
         person, garment = by_pid[combo.person_id], by_gid[combo.garment_id]
         try:
             pp = prep.process(manifest.root / person.image, size=size)
-            params = hmr2(pp.image, bbox=person_square_bbox(pp))  # kişi-merkezli kare (hizalama)
+            params = hmr2(pp.image, bbox=person_square_bbox(pp))  # person-centred square (alignment)
             asset = load_garment_asset(
                 garments_root / garment.mesh,
                 texture_path=garments_root / garment.texture if garment.texture else None,
@@ -83,16 +83,16 @@ def main() -> int:
             combos.append((person, garment, bundle))
             seen_g.add(combo.garment_id)
         except Exception as e:
-            print(f"ATLA {combo.person_id}×{combo.garment_id}: {e}", file=sys.stderr)
+            print(f"SKIP {combo.person_id}×{combo.garment_id}: {e}", file=sys.stderr)
         if len(combos) >= args.combos:
             break
     if not combos:
-        raise SystemExit("HATA: kombo kurulamadı")
+        raise SystemExit("ERROR: no combo could be built")
 
     sampler = FluxTryOnSampler(base["model"]["flux_fill_repo"], checkpoint=args.checkpoint,
                                prompt=base["model"]["prompt"])
 
-    # Grid: her satır bir kombo; sütun 0 = giysi referansı, sonrası her guidance
+    # Grid: one row per combo; column 0 = the garment reference, then one per guidance
     tw = args.thumb
     th = int(tw * size[0] / size[1])
     cols = 1 + len(args.guidances)
@@ -109,7 +109,7 @@ def main() -> int:
     out = out_root / "guidance_sweep.png"
     out.parent.mkdir(parents=True, exist_ok=True)
     grid.save(out)
-    print(f"\nGrid: {out}  (satır=kombo, sütun=guidance; solgunluk hangi g'de düzeliyor?)")
+    print(f"\nGrid: {out}  (row=combo, column=guidance; at which g does the washed-out look improve?)")
     return 0
 
 

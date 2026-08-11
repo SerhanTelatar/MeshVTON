@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
-"""GEOMETRİK ÜST SINIR figürü — 3B render'ın doğrudan kompoziti (difüzyon YOK).
+"""GEOMETRIC UPPER BOUND figure — a direct composite of the 3D render (NO diffusion).
 
-Amaç: "koşullamanın taşıdığı geometrik bilgi ne kadar?" sorusunu görselleştirmek.
-Giysinin drape edilmiş NORMAL haritası (control_normal) basit bir Lambert ışıkla
-gölgelenip derinlik-testli silüet (control_depth_sil[2]) içine yapıştırılır. Sonuç:
-fotoğrafın üstünde keskin, kıvrımlı, gölgeli gri giysi — modelin ulaşabileceği
-geometrik tavan.
+Purpose: to visualize the question "how much geometric information does the conditioning carry?".
+The draped garment's NORMAL map (control_normal) is shaded with a simple Lambert light and
+pasted inside the depth-tested silhouette (control_depth_sil[2]). The result: a crisp,
+folded, shaded grey garment on top of the photo — the geometric ceiling the model could
+reach.
 
-ÖNEMLİ, tezde böyle sunulmalı: bu bir ÜRETİM DEĞİL, 3B kompozit. Model çıktısıyla
-yan yana konur ve şöyle okunur:
-  - kompozit: geometri kusursuz, ama ESKİ GİYSİ kenarlardan görünmeye devam eder
-    (kompozit onu kaldıramaz) ve ışık fotoğrafla uyumsuzdur;
-  - model çıktısı: eski giysiyi KALDIRIR ve ışığa oturur, ama kıvrım üretemez.
-Bu karşıtlık, üretken adımın neden gerekli olduğunun doğrudan kanıtıdır.
+IMPORTANT, present it this way in the thesis: this is NOT a generation, it is a 3D composite.
+It is placed next to the model output and read like this:
+  - composite: the geometry is flawless, but the OLD GARMENT keeps showing at the edges
+    (the composite cannot remove it) and the lighting does not match the photo;
+  - model output: it REMOVES the old garment and matches the lighting, but cannot produce folds.
+This contrast is direct evidence of why the generative step is necessary.
 
-Difüzyon koşmaz; model çıktısı varsa mevcut preds klasöründen OKUNUR.
+Diffusion is not run; if model outputs exist they are READ from the existing preds folder.
 
-Kullanım:
+Usage:
   python v2/scripts/render_composite.py --idm-repo /content/IDM-VTON
   [--limit 5] [--pred-set ckpt_control_on_hp-012_sc125]
 """
@@ -41,25 +41,25 @@ from meshvton2.conditioning.garment import load_garment_asset  # noqa: E402
 from meshvton2.conditioning.person import PersonPreprocessor, person_square_bbox  # noqa: E402
 from meshvton2.eval.golden_set import load_manifest  # noqa: E402
 
-# Kamera-uzayı ışık yönü (+z kameraya doğru), sol-üstten. ÖLÇEREK seçildi: giysi
-# yüzeyi büyük ölçüde kameraya bakar, kıvrımlar (0,0,1) etrafında ~25° sapmadır;
-# okunabilirlik ışığın TEĞET bileşeniyle artar. 25°'lik rejimde ölçülen yoğunluk std:
-#   (-0.35,0.45,0.82) teğet 0.57 → std 0.072, gri 190-248 (neredeyse düz beyaz)
-#   (-0.60,0.60,0.53) teğet 0.85 → std 0.105, gri 136-222  ← seçilen
-#   (-0.65,0.70,0.30) teğet 0.95 → std 0.112 ama giysi belirgin koyulaşıyor
+# Camera-space light direction (+z towards the camera), from the upper left. Chosen BY
+# MEASUREMENT: the garment surface mostly faces the camera and folds deviate ~25° around
+# (0,0,1); readability grows with the TANGENTIAL component. Intensity std in that 25° regime:
+#   (-0.35,0.45,0.82) tangent 0.57 → std 0.072, grey 190-248 (nearly flat white)
+#   (-0.60,0.60,0.53) tangent 0.85 → std 0.105, grey 136-222  ← chosen
+#   (-0.65,0.70,0.30) tangent 0.95 → std 0.112 but the garment darkens noticeably
 LIGHT = np.array([-0.60, 0.60, 0.53])
 LIGHT /= np.linalg.norm(LIGHT)
-AMBIENT, DIFFUSE = 0.42, 0.58  # ambient tabanı olmadan gölgeler tıkanıp siyaha düşüyor
+AMBIENT, DIFFUSE = 0.42, 0.58  # without an ambient floor the shadows clog and fall to black
 
 
 def shade(normal_chw: np.ndarray, sil: np.ndarray) -> tuple[np.ndarray, dict]:
-    """(3,H,W) [-1,1] normaller → (H,W) [0,1] Lambert yoğunluğu + teşhis.
+    """(3,H,W) [-1,1] normals → (H,W) [0,1] Lambert intensity + diagnostics.
 
-    z-İŞARETİ OTOMATİK: kamera sözleşmesi (+y aşağı) yüzünden kameraya bakan
-    yüzeylerin n_z işareti sabit değil. Yanlış işarette n·L her yerde negatife
-    düşer, clip(0) ile her piksel ambient'e oturur ve kompozit DÜZ KOYU çıkar
-    (ilk koşuda tam olarak bu oldu). Silüet içindeki ortalama n_z'ye bakıp
-    ışığın z bileşenini ona göre çeviriyoruz.
+    AUTOMATIC z-SIGN: because of the camera convention (+y down), the n_z sign of
+    camera-facing surfaces is not fixed. With the wrong sign n·L goes negative
+    everywhere, clip(0) drops every pixel to ambient and the composite comes out
+    FLAT DARK (exactly what happened on the first run). We look at the mean n_z
+    inside the silhouette and flip the light's z component accordingly.
     """
     n = normal_chw.transpose(1, 2, 0).astype(np.float64)
     n /= np.linalg.norm(n, axis=2, keepdims=True) + 1e-8
@@ -69,9 +69,9 @@ def shade(normal_chw: np.ndarray, sil: np.ndarray) -> tuple[np.ndarray, dict]:
         L[2] = -L[2]
     inten = AMBIENT + DIFFUSE * np.clip(n @ L, 0.0, 1.0)
     vals = inten[sil] if sil.any() else np.array([0.0])
-    diag = {"nz": nz, "z_cevrildi": nz < 0,
-            "gri_p5": int(np.percentile(vals, 5) * 255),
-            "gri_p95": int(np.percentile(vals, 95) * 255),
+    diag = {"nz": nz, "z_flipped": nz < 0,
+            "grey_p5": int(np.percentile(vals, 5) * 255),
+            "grey_p95": int(np.percentile(vals, 95) * 255),
             "std": float(vals.std())}
     return inten, diag
 
@@ -79,9 +79,9 @@ def shade(normal_chw: np.ndarray, sil: np.ndarray) -> tuple[np.ndarray, dict]:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--idm-repo", type=Path, required=True)
-    ap.add_argument("--limit", type=int, default=5, help="ilk N kombo")
+    ap.add_argument("--limit", type=int, default=5, help="first N combos")
     ap.add_argument("--pred-set", default="ckpt_control_on_hp-012_sc125",
-                    help="model çıktılarının okunacağı eval_results alt klasörü")
+                    help="eval_results subfolder the model outputs are read from")
     args = ap.parse_args()
 
     assert_real_impl()
@@ -120,28 +120,28 @@ def main() -> int:
         inten, d = shade(b.control_normal.numpy(), sil)
         comp = pp.image.copy()
         comp[sil] = np.clip(inten[sil, None] * 255.0, 0, 255).astype(np.uint8)
-        # Silüet DELİK oranı: drape edilmiş giysi gövdeye giriyorsa derinlik testi
-        # parçalar kesiyor → kompozitte eski giysi ortadan sızar (gerçek bir bulgu,
-        # artefakt değil). Dolu gövde = morfolojik kapama sonrası alan.
+        # Silhouette HOLE ratio: if the draped garment sinks into the body, the depth test
+        # cuts pieces out → the old garment leaks through the middle of the composite (a real
+        # finding, not an artifact). Solid body = the area after morphological closing.
         import cv2
 
         k = np.ones((max(size[1] // 40, 3),) * 2, np.uint8)
         closed = cv2.morphologyEx(sil.astype(np.uint8), cv2.MORPH_CLOSE, k) > 0
-        delik = 1.0 - sil.sum() / max(closed.sum(), 1)
+        hole_ratio = 1.0 - sil.sum() / max(closed.sum(), 1)
         Image.fromarray(comp).save(out_dir / f"{person.id}__{garment.id}.composite.png")
 
-        row = [("kişi", pp.image), ("3B RENDER KOMPOZİTİ (üst sınır)", comp)]
+        row = [("person", pp.image), ("3D RENDER COMPOSITE (upper bound)", comp)]
         p = pred_dir / cfg["pred_pattern"].format(
             person_id=person.id, garment_id=garment.id, angle=0)
         if p.exists():
-            row.append(("model çıktısı", np.asarray(Image.open(p).convert("RGB"))))
+            row.append(("model output", np.asarray(Image.open(p).convert("RGB"))))
         else:
-            print(f"  NOT: model çıktısı yok ({p.name}) — o panel atlandı")
+            print(f"  NOTE: no model output ({p.name}) — that panel was skipped")
         panels_all.append((f"{person.id} × {garment.id}", row))
         print(f"OK {person.id} × {garment.id}  |  n_z={d['nz']:+.2f}"
-              f"{' (ışık z ÇEVRİLDİ)' if d['z_cevrildi'] else ''}"
-              f"  gri {d['gri_p5']}-{d['gri_p95']} std={d['std']:.3f}"
-              f"  silüet delik oranı=%{delik*100:.1f}")
+              f"{' (light z FLIPPED)' if d['z_flipped'] else ''}"
+              f"  grey {d['grey_p5']}-{d['grey_p95']} std={d['std']:.3f}"
+              f"  silhouette hole ratio={hole_ratio*100:.1f}%")
 
     TH = 230
     hh = round(TH * size[0] / size[1])
@@ -153,11 +153,11 @@ def main() -> int:
                        (c * TH, r * hh))
     sp = out_dir / "upper_bound_grid.png"
     grid.save(sp)
-    print(f"\nIzgara: {sp}")
-    print("sütunlar: " + " | ".join(l for l, _ in panels_all[0][1]))
-    print("\nOKUMA: kompozitte giysi keskin ve kıvrımlı ama ESKİ GİYSİ kenarlardan sızar")
-    print("       ve ışık fotoğrafla uyumsuzdur; model çıktısı eskiyi kaldırır ve ışığa")
-    print("       oturur ama kıvrım üretemez. Üretken adımın gerekçesi bu karşıtlıktır.")
+    print(f"\nGrid: {sp}")
+    print("columns: " + " | ".join(l for l, _ in panels_all[0][1]))
+    print("\nREADING: in the composite the garment is crisp and folded but the OLD GARMENT leaks at")
+    print("         the edges and the light does not match the photo; the model output removes the")
+    print("         old one and matches the light but cannot produce folds — the case for the generative step.")
     return 0
 
 

@@ -1,4 +1,4 @@
-"""Dataset sözleşme okuyucuları + eğitim döngüsü testleri (saf torch, lokal)."""
+"""Dataset contract readers + training loop tests (pure torch, local)."""
 
 import numpy as np
 import pytest
@@ -15,7 +15,7 @@ SIZE = (64, 48)
 
 @pytest.fixture(scope="module")
 def synth_root(tmp_path_factory):
-    """Stub builder'la küçük sentetik set — dataset'ler bunu okur."""
+    """A small synthetic set built with the stub builder — the datasets read it."""
     root = tmp_path_factory.mktemp("synth")
     rng = np.random.RandomState(3)
     assets = [
@@ -54,7 +54,7 @@ def test_bundle_dataset(synth_root):
     b = ds[0]
     assert b["gt_rgb"].shape == (4, 3, *SIZE)  # (V,C,H,W)
     assert b["appearance_ref"].shape == (4, 3, *SIZE)
-    # aynı örneğin görüşleri AYNI referansı paylaşır
+    # the views of the same sample share the SAME reference
     assert torch.equal(b["appearance_ref"][0], b["appearance_ref"][3])
 
 
@@ -101,10 +101,10 @@ def test_train_loop_learns_and_resumes(tmp_path):
     )
     first_loss = float(step_fn(loader[0]))
     loop.run(loader)
-    assert float(step_fn(loader[0])) < first_loss * 0.5  # öğreniyor
+    assert float(step_fn(loader[0])) < first_loss * 0.5  # it is learning
     assert (tmp_path / "ckpt_000060.pt").exists() and (tmp_path / "latest.pt").exists()
 
-    # resume: yeni loop, latest'ten devam — adım sayısı ve ağırlıklar geri gelir
+    # resume: a new loop continuing from latest — the step count and weights come back
     model2 = torch.nn.Linear(4, 1)
     loop2 = TrainLoop(
         model2.parameters(), step_fn, cfg,
@@ -127,7 +127,7 @@ def test_train_loop_rejects_frozen_params():
 
 
 def test_latents_fast_path(synth_root):
-    """precompute latent'leri varsa dataset VAE'siz sözlük döner; yoksa net hata."""
+    """With precomputed latents the dataset returns a VAE-free dict; without them, a clear error."""
     items = discover_synth_items(synth_root)
     it = items[0]
     with pytest.raises(FileNotFoundError, match="precompute"):
@@ -140,11 +140,11 @@ def test_latents_fast_path(synth_root):
     d = SingleViewDataset([it], size=SIZE, use_latents=True)[0]
     assert set(fake) <= set(d) and d["inpaint_mask"].shape == (1, *SIZE)
     assert torch.equal(d["gt_lat"], fake["gt_lat"])
-    (it.item_dir / "latents.pt").unlink()  # fixture'ı diğer testler için temiz bırak
+    (it.item_dir / "latents.pt").unlink()  # leave the fixture clean for the other tests
 
 
 def test_checkpoint_rotation(tmp_path):
-    """100 adımda bir ckpt + rotasyon: yalnız son keep_last kalır (Drive kotası)."""
+    """A ckpt every 100 steps + rotation: only the last keep_last survive (Drive quota)."""
     model = torch.nn.Linear(2, 1)
     loader = [{"x": torch.randn(4, 2)}] * 5
     cfg = TrainConfig(max_steps=50, ckpt_every=10, keep_last=2, log_every=1000,

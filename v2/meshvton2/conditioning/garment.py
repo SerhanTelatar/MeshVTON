@@ -1,10 +1,10 @@
-"""Giysi varlığı yükleme (v1 garment_draper.load_garment_mesh'ten uyarlandı).
+"""Garment asset loading (adapted from v1 garment_draper.load_garment_mesh).
 
-v2 kuralları:
-- trimesh yoksa sahte mesh DÖNMEZ, ImportError yükselir (v1 sessiz-fallback dersi).
-- Gerçek texture bulunamazsa ValueError yükselir — texturesiz mesh pipeline'a
-  giremez (v1 Probe D: gri render = desen halüsinasyonunun ana nedeni).
-  Bilinçli istisna için allow_untextured=True.
+v2 rules:
+- If trimesh is missing, NO fake mesh is returned, an ImportError is raised (the v1 silent-fallback lesson).
+- If no real texture is found, a ValueError is raised — an untextured mesh cannot enter the
+  pipeline (v1 Probe D: a grey render was the main cause of pattern hallucination).
+  Use allow_untextured=True for a deliberate exception.
 """
 
 from __future__ import annotations
@@ -19,8 +19,8 @@ from meshvton2.conditioning.builder import GarmentAsset
 
 
 def find_sibling_texture(obj_path: str | Path) -> str | None:
-    """CLOTH3D: .obj yanında .mtl'siz ayrık texture PNG. Sıra: aynı ad →
-    isim ipucu (tex/atlas/diffuse/albedo/color/uv) → klasördeki tek görüntü."""
+    """CLOTH3D: a separate texture PNG next to the .obj without an .mtl. Order: same name →
+    name hint (tex/atlas/diffuse/albedo/color/uv) → the only image in the folder."""
     obj_path = str(obj_path)
     d = os.path.dirname(os.path.abspath(obj_path))
     stem = os.path.splitext(os.path.basename(obj_path))[0]
@@ -42,7 +42,7 @@ def find_sibling_texture(obj_path: str | Path) -> str | None:
 
 
 def _is_real_texture(a) -> bool:
-    """trimesh .mtl yokken 2x2 placeholder üretir — gerçek texture >= 8px olmalı."""
+    """trimesh produces a 2x2 placeholder when there is no .mtl — a real texture must be >= 8px."""
     return a is not None and getattr(a, "ndim", 0) == 3 and min(a.shape[:2]) >= 8
 
 
@@ -53,9 +53,9 @@ def load_garment_asset(
     garment_id: str | None = None,
     allow_untextured: bool = False,
 ) -> GarmentAsset:
-    """Mesh + texture yükler. Texture önceliği: açık yol > sibling dosya >
-    (yalnız gerçekse) mesh materyali. Hiçbiri yoksa ValueError."""
-    import trimesh  # yoksa ImportError yükselsin — sahte mesh fallback YOK
+    """Loads mesh + texture. Texture priority: explicit path > sibling file >
+    (only if real) the mesh material. ValueError if none of them exist."""
+    import trimesh  # let the ImportError propagate if missing — there is NO fake mesh fallback
     from PIL import Image
 
     mesh_path = Path(mesh_path)
@@ -89,13 +89,13 @@ def load_garment_asset(
 
     if texture is None and not allow_untextured:
         raise ValueError(
-            f"{mesh_path}: gerçek texture bulunamadı (açık yol / sibling PNG / materyal). "
-            "Texturesiz mesh pipeline'a giremez (gri render = halüsinasyon, v1 Probe D). "
-            "texture_path verin veya bilinçli olarak allow_untextured=True kullanın."
+            f"{mesh_path}: no real texture found (explicit path / sibling PNG / material). "
+            "An untextured mesh cannot enter the pipeline (grey render = hallucination, v1 Probe D). "
+            "Pass texture_path or deliberately use allow_untextured=True."
         )
     if texture is not None and uv is None and not allow_untextured:
         raise ValueError(
-            f"{mesh_path}: texture var ama geçerli per-vertex UV yok — desen render edilemez."
+            f"{mesh_path}: there is a texture but no valid per-vertex UV — the pattern cannot be rendered."
         )
 
     return GarmentAsset(

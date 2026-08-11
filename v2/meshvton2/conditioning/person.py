@@ -1,19 +1,19 @@
-"""Kişi ön-işleme: parsing + pose -> agnostic görüntü + inpaint maskesi.
+"""Person preprocessing: parsing + pose -> agnostic image + inpaint mask.
 
-Faz 1 backend'i = IDM-VTON reposunun ön-işleme modülleri (humanparsing ONNX +
-openpose + get_mask_location). Gerekçe:
-- v1 Colab'da aylarca doğrulanmış, bilinen-iyi maske mantığı.
-- v2'nin İHTİYAÇ DUYMADIĞI ağır parçalar (densepose/detectron2 source build) hiç
-  kurulmaz — yalnız onnxruntime + hafif torch modülleri.
-- v1'in kendi AgnosticMaskGenerator'ı EĞİTİLMEMİŞ placeholder segmentasyona
-  dayanıyordu; ona güvenilmez (plan: "gerçek backend şart").
+The Phase 1 backend = the IDM-VTON repo's preprocessing modules (humanparsing ONNX +
+openpose + get_mask_location). Rationale:
+- Known-good mask logic, validated for months on v1 Colab.
+- The heavy parts v2 DOES NOT NEED (densepose/detectron2 source build) are never
+  installed — only onnxruntime + lightweight torch modules.
+- v1's own AgnosticMaskGenerator relied on an UNTRAINED placeholder segmentation;
+  it cannot be trusted (plan: "a real backend is mandatory").
 
-Bu bir diffusion-backbone bağımlılığı DEĞİLDİR (kişi hakkında, model hakkında değil).
-Faz 2+'da istenirse tamamen vendor edilebilir.
+This is NOT a diffusion-backbone dependency (it is about the person, not the model).
+It can be fully vendored in Phase 2+ if desired.
 
-Kurulum (Colab):
+Setup (Colab):
   git clone https://github.com/yisol/IDM-VTON /content/IDM-VTON
-  + humanparsing onnx / openpose ckpt dosyaları (notebook setup hücresi indirir)
+  + the humanparsing onnx / openpose ckpt files (the notebook setup cell downloads them)
 """
 
 from __future__ import annotations
@@ -25,38 +25,38 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-# IDM-VTON ön-işlemesi 384x512'de çalışır; çıktılar hedef boyuta ölçeklenir.
+# IDM-VTON preprocessing runs at 384x512; the outputs are scaled to the target size.
 _PREP_SIZE = (384, 512)  # (W,H)
 GRAY = 128
 
 
 @dataclass
 class PersonPrep:
-    image: np.ndarray      # (H,W,3) uint8 RGB — hedef boyutta kişi
-    agnostic: np.ndarray   # (H,W,3) uint8 RGB — maske içi gri
-    mask: np.ndarray       # (H,W) uint8 {0,255} — 255 = inpaint (giysi) bölgesi
-    parse: np.ndarray      # (Hp,Wp) uint8 — ham parsing etiketleri (384x512)
-    keypoints: dict        # openpose çıktısı ("pose_keypoints_2d")
+    image: np.ndarray      # (H,W,3) uint8 RGB — the person at the target size
+    agnostic: np.ndarray   # (H,W,3) uint8 RGB — grey inside the mask
+    mask: np.ndarray       # (H,W) uint8 {0,255} — 255 = the inpaint (garment) region
+    parse: np.ndarray      # (Hp,Wp) uint8 — raw parsing labels (384x512)
+    keypoints: dict        # openpose output ("pose_keypoints_2d")
 
 
 def apply_agnostic(image: np.ndarray, mask: np.ndarray, fill: int = GRAY) -> np.ndarray:
-    """Maske içini nötr griyle doldur — saf numpy, testlenebilir."""
+    """Fill the inside of the mask with neutral grey — pure numpy, testable."""
     out = image.copy()
     out[mask > 127] = (fill, fill, fill)
     return out
 
 
 def person_square_bbox(prep: PersonPrep, pad: float = 0.10) -> np.ndarray:
-    """Parse'tan kişi-merkezli KARE bbox (hedef çözünürlükte köşeler: x0,y0,x1,y1).
+    """Person-centred SQUARE bbox from the parse (corners at the target resolution: x0,y0,x1,y1).
 
-    detect_person_bbox'ın tam-kare varsayılanı 'kişi merkezde ve kadrajı dolduruyor'
-    varsayımına dayanır; off-center/küçük kişide weak_persp_to_full'un offset
-    terimlerini sıfırlayıp gövdeyi görüntü merkezine kaydırır. Bu bbox gerçek kişi
-    bölgesinden türetilir; kare olduğu için HMR2'nin crop sözleşmesini korur
-    (taşma regress'te sıfır-padding ile çözülür)."""
+    detect_person_bbox's full-frame default assumes 'the person is centred and fills the
+    frame'; for an off-centre/small person it zeroes weak_persp_to_full's offset terms and
+    shifts the body to the image centre. This bbox is derived from the real person region;
+    being square, it preserves HMR2's crop contract (overflow is resolved with zero padding
+    in regress)."""
     ys, xs = np.nonzero(prep.parse > 0)
     if len(xs) == 0:
-        raise ValueError("Parse'ta kişi bölgesi yok — bbox türetilemedi")
+        raise ValueError("No person region in the parse — the bbox could not be derived")
     h, w = prep.image.shape[:2]
     ph, pw = prep.parse.shape[:2]
     sx, sy = w / pw, h / ph
@@ -70,13 +70,13 @@ def person_square_bbox(prep: PersonPrep, pad: float = 0.10) -> np.ndarray:
 
 
 class PersonPreprocessor:
-    """IDM-VTON preprocess sarmalayıcısı. Ağır modeller ilk process() çağrısında yüklenir."""
+    """IDM-VTON preprocess wrapper. The heavy models are loaded on the first process() call."""
 
     def __init__(self, idm_repo: str | Path, device_index: int = 0, category: str = "upper_body"):
         self.idm_repo = Path(idm_repo)
         if not self.idm_repo.exists():
             raise FileNotFoundError(
-                f"IDM-VTON repo yok: {self.idm_repo} — notebook setup hücresi clone etmeli."
+                f"no IDM-VTON repo: {self.idm_repo} — the notebook setup cell must clone it."
             )
         self.device_index = device_index
         self.category = category
@@ -106,8 +106,8 @@ class PersonPreprocessor:
     def process(self, image: np.ndarray | str | Path, size: tuple[int, int] = (1024, 768)) -> PersonPrep:
         """
         Args:
-            image: (H,W,3) uint8 RGB veya dosya yolu.
-            size: hedef (height, width).
+            image: (H,W,3) uint8 RGB or a file path.
+            size: target (height, width).
         """
         self._load()
         if isinstance(image, (str, Path)):
@@ -127,7 +127,7 @@ class PersonPreprocessor:
         if mask.ndim == 3:
             mask = mask[..., 0]
         if mask.sum() == 0:
-            raise RuntimeError("Boş inpaint maskesi — parsing/pose başarısız (kişi tespit edilemedi?)")
+            raise RuntimeError("Empty inpaint mask — parsing/pose failed (person not detected?)")
 
         img = np.asarray(pil)
         return PersonPrep(

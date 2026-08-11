@@ -1,8 +1,8 @@
-"""camera.py matematik testleri (saf numpy — GPU/veri gerektirmez).
+"""camera.py maths tests (pure numpy — no GPU/data required).
 
-Not: Faz 2 çıkış kriteri olan reprojection-IoU testi (SMPL-X silüeti vs parser
-maskesi, IoU >= 0.70) gerçek veri ister ve Colab'da koşulur; buradakiler
-dönüşümün geometrik değişmezlerini kilitler.
+Note: the reprojection-IoU test that forms the Phase 2 exit criterion (SMPL-X silhouette vs
+the parser mask, IoU >= 0.70) needs real data and runs on Colab; the ones here lock in the
+geometric invariants of the transform.
 """
 
 import numpy as np
@@ -30,16 +30,16 @@ def _params(s=0.9, tx=0.0, ty=0.0, bbox=(0, 0, 768, 1024)):
 def test_weak_persp_geometry():
     t, focal = weak_persp_to_full(np.array([0.9, 0.0, 0.0]), np.array([0, 0, 768, 1024]), SIZE)
     assert t[2] > 0 and focal > 0
-    # kişi karede daha büyük (s büyük) -> kamera daha yakın (tz küçük)
+    # the person is bigger in frame (large s) -> the camera is closer (small tz)
     t2, _ = weak_persp_to_full(np.array([1.8, 0.0, 0.0]), np.array([0, 0, 768, 1024]), SIZE)
     assert t2[2] < t[2]
-    # geçersiz girdi fail-fast
+    # invalid input fails fast
     with pytest.raises(ValueError):
         weak_persp_to_full(np.array([0.0, 0, 0]), np.array([0, 0, 768, 1024]), SIZE)
 
 
 def test_photo_camera_centered_person_projects_to_center():
-    """Ortalanmış bbox + tx=ty=0 -> gövde merkezi (orijin) görüntü merkezine düşer."""
+    """A centred bbox + tx=ty=0 -> the body centre (the origin) lands at the image centre."""
     cam = photo_camera(_params(), SIZE)
     uv = project(cam, np.zeros((1, 3)))
     assert np.allclose(uv[0], [SIZE[1] / 2, SIZE[0] / 2], atol=1e-6)
@@ -47,11 +47,11 @@ def test_photo_camera_centered_person_projects_to_center():
 
 
 def test_offcenter_bbox_shifts_projection():
-    cam_l = photo_camera(_params(bbox=(0, 0, 384, 1024)), SIZE)     # kişi solda
+    cam_l = photo_camera(_params(bbox=(0, 0, 384, 1024)), SIZE)     # person on the left
     cam_c = photo_camera(_params(), SIZE)
     u_l = project(cam_l, np.zeros((1, 3)))[0, 0]
     u_c = project(cam_c, np.zeros((1, 3)))[0, 0]
-    assert u_l < u_c  # sol bbox -> izdüşüm solda
+    assert u_l < u_c  # left bbox -> projection on the left
 
 
 def test_orbit_identity_and_period():
@@ -65,7 +65,7 @@ def test_orbit_identity_and_period():
 
 
 def test_orbit_preserves_pivot_distance_and_projection():
-    """Pivot her orbit açısında aynı piksele düşer, kamera-pivot mesafesi sabittir."""
+    """The pivot lands on the same pixel at every orbit angle, the camera-pivot distance is constant."""
     cam = photo_camera(_params(), SIZE)
     pivot = np.array([0.05, 0.3, -0.02])
     d0 = np.linalg.norm(camera_center(cam) - pivot)
@@ -78,30 +78,30 @@ def test_orbit_preserves_pivot_distance_and_projection():
 
 
 def test_orbit_180_views_opposite_side():
-    """Pivot'un önündeki nokta 180°'de pivot'un arkasına düşer (derinlik sırası ters)."""
+    """A point in front of the pivot lands behind it at 180° (the depth order flips)."""
     cam = photo_camera(_params(), SIZE)
     pivot = np.zeros(3)
-    front = np.array([[0.0, 0.0, -0.2]])  # kameraya doğru offset
+    front = np.array([[0.0, 0.0, -0.2]])  # offset towards the camera
     _, R, T = (np.asarray(x) for x in (cam.K, cam.R, cam.T))
     z_front = (front @ R.T + T)[0, 2]
     o = orbit_camera(cam, pivot, 180)
     _, R2, T2 = (np.asarray(x) for x in (o.K, o.R, o.T))
     z_front_back = (front @ R2.T + T2)[0, 2]
     z_pivot = T[2]
-    assert z_front < z_pivot            # önde: pivot'tan yakın
-    assert z_front_back > z_pivot       # 180°: pivot'tan uzak
+    assert z_front < z_pivot            # in front: closer than the pivot
+    assert z_front_back > z_pivot       # at 180°: farther than the pivot
 
 
 def test_orbit_90_270_symmetric():
-    """Pivot'un önündeki nokta 90° ve 270°'de merkeze göre zıt yanlara düşer
-    (aynı derinlikte kaldığı için simetri tamdır)."""
+    """A point in front of the pivot lands on opposite sides of the centre at 90° and 270°
+    (the symmetry is exact because it stays at the same depth)."""
     cam = photo_camera(_params(), SIZE)
     pivot = np.zeros(3)
-    front = np.array([[0.0, 0.0, -0.3]])  # pivot'un kamera tarafı
+    front = np.array([[0.0, 0.0, -0.3]])  # the camera side of the pivot
     u90 = project(orbit_camera(cam, pivot, 90), front)[0, 0]
     u270 = project(orbit_camera(cam, pivot, 270), front)[0, 0]
     cx = SIZE[1] / 2
-    assert abs(u90 - cx) > 1.0  # merkezden belirgin ayrık
+    assert abs(u90 - cx) > 1.0  # clearly away from the centre
     assert (u90 - cx) == pytest.approx(-(u270 - cx), abs=1e-6)
 
 
@@ -118,10 +118,10 @@ def test_camera_spec_serializable():
 
 
 def test_detect_person_bbox_is_square_and_centered():
-    """HMR2 kare crop bekler — dikdörtgen bbox oran bozup kamerayı kaydırıyordu."""
+    """HMR2 expects a square crop — a rectangular bbox broke the aspect ratio and shifted the camera."""
     from meshvton2.conditioning.body import detect_person_bbox
 
     bbox = detect_person_bbox(np.zeros((1024, 768, 3), np.uint8))
     x0, y0, x1, y1 = bbox
-    assert (x1 - x0) == (y1 - y0) == 1024  # kare, kenar = max(H,W)
+    assert (x1 - x0) == (y1 - y0) == 1024  # square, side = max(H,W)
     assert (x0 + x1) / 2 == pytest.approx(384) and (y0 + y1) / 2 == pytest.approx(512)

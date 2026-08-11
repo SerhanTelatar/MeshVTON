@@ -1,7 +1,7 @@
-"""Golden set manifest şeması ve yükleyicisi.
+"""Golden set manifest schema and loader.
 
-Manifest repo'ya commit edilir (JSON); görüntülerin kendisi gitignored
-(VITON-HD/CLOTH3D lisansları — yeniden dağıtım yok).
+The manifest is committed to the repo (JSON); the images themselves are gitignored
+(the VITON-HD/CLOTH3D licences — no redistribution).
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ MANIFEST_VERSION = 1
 @dataclass(frozen=True)
 class GoldenPerson:
     id: str
-    image: str          # golden_root'a göreli yol
+    image: str          # path relative to golden_root
     source: str         # "vitonhd_test" | "external"
     pose: str = "front"  # "front" | "side" | "three_quarter" | "back"
 
@@ -24,8 +24,8 @@ class GoldenPerson:
 @dataclass(frozen=True)
 class GoldenGarment:
     id: str
-    mesh: str            # .obj yolu (garments_root'a göreli)
-    texture: str | None  # sibling texture PNG; None = mesh materyalinden
+    mesh: str            # .obj path (relative to garments_root)
+    texture: str | None  # sibling texture PNG; None = from the mesh material
     category: str = "top"     # "top" | "dress" | "bottom"
     pattern: str = "solid"    # "solid" | "stripe" | "logo" | "plaid" | ...
 
@@ -48,17 +48,17 @@ class GoldenManifest:
         pids = {p.id for p in self.persons}
         gids = {g.id for g in self.garments}
         if len(pids) != len(self.persons):
-            raise ValueError("Yinelenen person id")
+            raise ValueError("Duplicate person id")
         if len(gids) != len(self.garments):
-            raise ValueError("Yinelenen garment id")
+            raise ValueError("Duplicate garment id")
         if not self.combos:
             self.combos = [GoldenCombo(p.id, g.id) for p in self.persons for g in self.garments]
         for c in self.combos:
             if c.person_id not in pids or c.garment_id not in gids:
-                raise ValueError(f"Combo bilinmeyen id içeriyor: {c}")
+                raise ValueError(f"Combo contains an unknown id: {c}")
 
     def items(self):
-        """Değerlendirilecek (person, garment, angle) üçlülerini üretir."""
+        """Yields the (person, garment, angle) triples to evaluate."""
         by_pid = {p.id: p for p in self.persons}
         by_gid = {g.id: g for g in self.garments}
         for c in self.combos:
@@ -84,7 +84,7 @@ def load_manifest(path: str | Path) -> GoldenManifest:
     path = Path(path)
     data = json.loads(path.read_text())
     if data.get("version") != MANIFEST_VERSION:
-        raise ValueError(f"Manifest sürümü uyumsuz: {data.get('version')} != {MANIFEST_VERSION}")
+        raise ValueError(f"Manifest version mismatch: {data.get('version')} != {MANIFEST_VERSION}")
     return GoldenManifest(
         root=path.parent,
         persons=[GoldenPerson(**p) for p in data["persons"]],

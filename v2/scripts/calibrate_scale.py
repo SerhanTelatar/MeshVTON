@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
-"""Giysi ÖLÇEĞİNİ fotoğraf yolunda ampirik kalibre et (askı kalibrasyonunun ikizi).
+"""Empirically calibrate the garment SCALE on the photo path (twin of the hang calibration).
 
-Bulgu (2026-08-10): askı düzeltildikten (hang_pad=-0.12) sonra bile giysi gövdeye
-göre FAZLA GENİŞ görünüyor — kollardan taşan panço benzeri siluet (ör. 00737_00).
-`_prealign_garment` bilinçli olarak hiç ölçekleme yapmıyor (CLOTH3D giysileri
-metre ölçeğinde ve SMPL bedenine göre modelli). Ama fotoğraf yolunda gövde
-HMR2'den geliyor; o beden CLOTH3D'nin varsaydığı bedenle aynı olmak zorunda değil.
+Finding (2026-08-10): even after the hang was fixed (hang_pad=-0.12) the garment looks TOO
+WIDE relative to the body — a poncho-like silhouette spilling over the arms (e.g. 00737_00).
+`_prealign_garment` deliberately does no scaling at all (CLOTH3D garments are in metre scale
+and modelled against the SMPL body). But on the photo path the body comes from HMR2; that
+body does not have to match the body CLOTH3D assumed.
 
-Yöntem: garment_scale'i tarayıp her değerde mesh giysi silüeti ile parser'ın
-bulduğu GERÇEK giysi maskesi arasındaki IoU'yu ölçer. Difüzyon YOK.
+Method: sweep garment_scale and, at each value, measure the IoU between the mesh garment
+silhouette and the REAL garment mask found by the parser. NO diffusion.
 
-Okuma:
-  - Tepe 1.0'ın belirgin ALTINDA ise giysi gerçekten fazla büyük; o değeri kullan.
-  - Tepe 1.0 civarındaysa ölçek suçlu değil, genişlik farkı kesim/drape'ten geliyor.
+Reading:
+  - If the peak is clearly BELOW 1.0 the garment really is too big; use that value.
+  - If the peak is around 1.0 the scale is not to blame, the width gap comes from cut/drape.
 
-Kullanım:
+Usage:
   python v2/scripts/calibrate_scale.py --idm-repo /content/IDM-VTON
   [--hang-pad -0.12] [--range 0.70 1.15 0.05] [--garment upper_body__00047_Top]
 """
@@ -40,7 +40,7 @@ from meshvton2.conditioning.person import PersonPreprocessor, person_square_bbox
 from meshvton2.eval.golden_set import load_manifest  # noqa: E402
 
 ATR_GARMENT = (4, 7)
-# validate_camera.py'nin doğruladığı kişiler (hizalaması kanıtlı olanlarla kalibre et)
+# The people validate_camera.py verified (calibrate with those whose alignment is proven)
 DEFAULT_PERSONS = ("00000_00", "02935_00", "01455_00", "00737_00", "02199_00")
 
 
@@ -48,10 +48,10 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--idm-repo", type=Path, required=True)
     ap.add_argument("--persons", nargs="+", default=list(DEFAULT_PERSONS))
-    ap.add_argument("--garment", default=None, help="varsayılan: manifest'teki ilk giysi")
+    ap.add_argument("--garment", default=None, help="default: the first garment in the manifest")
     ap.add_argument("--hang-pad", type=float, default=PHOTO_HANG_PAD)
     ap.add_argument("--range", nargs=3, type=float, default=[0.70, 1.15, 0.05],
-                    metavar=("BAS", "BIT", "ADIM"))
+                    metavar=("START", "END", "STEP"))
     args = ap.parse_args()
 
     assert_real_impl()
@@ -77,7 +77,7 @@ def main() -> int:
     people = []
     for pid in args.persons:
         if pid not in by_pid:
-            print(f"ATLA {pid}: manifest'te yok", file=sys.stderr)
+            print(f"SKIP {pid}: not in the manifest", file=sys.stderr)
             continue
         pp = prep.process(manifest.root / by_pid[pid].image, size=size)
         params = hmr2(pp.image, bbox=person_square_bbox(pp))
@@ -85,17 +85,17 @@ def main() -> int:
                                   interpolation=cv2.INTER_NEAREST), ATR_GARMENT)
         people.append((pid, pp, params, worn))
     if not people:
-        raise SystemExit("HATA: hiç kişi hazırlanamadı")
+        raise SystemExit("ERROR: no person could be prepared")
 
     lo, hi, step = args.range
     scales = np.arange(lo, hi + 1e-9, step)
-    # HEDEF alan: parser'ın bulduğu gerçek giysi. Silüet% bunun etrafında tepe yapmalı —
-    # çok küçükse örtüşme eksik, çok büyükse birleşim şişer; IoU her iki uçta düşer.
+    # TARGET area: the real garment found by the parser. silhouette% should peak around it —
+    # too small and the overlap is short, too big and the union inflates; IoU drops at both ends.
     worn_pct = float(np.mean([w.mean() for *_, w in people])) * 100
-    print(f"giysi: {gid} | kişi: {len(people)} | hang_pad={args.hang_pad:+.2f} | "
-          f"ölçek taraması: {lo:.2f} → {hi:.2f} adım {step:.2f}")
-    print(f"HEDEF: gerçek giysi alanı (parser) = %{worn_pct:.1f} — silüet% buna yaklaşmalı\n")
-    print(f"{'ölçek':>7} {'ort.IoU':>8} {'silüet%':>8}   " + "  ".join(f"{p:>9}" for p, *_ in people))
+    print(f"garment: {gid} | people: {len(people)} | hang_pad={args.hang_pad:+.2f} | "
+          f"scale sweep: {lo:.2f} → {hi:.2f} step {step:.2f}")
+    print(f"TARGET: real garment area (parser) = {worn_pct:.1f}% — silhouette% should approach it\n")
+    print(f"{'scale':>7} {'mean IoU':>8} {'sil%':>8}   " + "  ".join(f"{p:>9}" for p, *_ in people))
 
     rows = []
     for sc in scales:
@@ -115,20 +115,20 @@ def main() -> int:
 
     best_sc, best_iou, _ = max(rows, key=lambda r: r[1])
     cur = next((r for r in rows if abs(r[0] - 1.0) < 1e-6), None)
-    print(f"\nEN İYİ: ölçek={best_sc:.2f} → ort.IoU={best_iou:.3f}")
-    # Tepe aralığın UCUNDAysa optimum dışarıda kalmıştır — sayıyı kullanma, aralığı genişlet
+    print(f"\nBEST: scale={best_sc:.2f} → mean IoU={best_iou:.3f}")
+    # If the peak sits at an EDGE of the range the optimum is outside — do not use the number, widen the range
     if abs(best_sc - rows[-1][0]) < 1e-6 or abs(best_sc - rows[0][0]) < 1e-6:
-        print(f"UYARI: tepe tarama SINIRINDA ({best_sc:.2f}) — gerçek optimum aralığın DIŞINDA.")
-        print(f"  Aralığı genişletip tekrar koşun, ör: --range {best_sc:.2f} {best_sc + 0.5:.2f} 0.05")
+        print(f"WARNING: the peak is at the sweep BOUNDARY ({best_sc:.2f}) — the true optimum is OUTSIDE the range.")
+        print(f"  Widen the range and re-run, e.g.: --range {best_sc:.2f} {best_sc + 0.5:.2f} 0.05")
     if cur:
-        print(f"MEVCUT: ölçek=1.00 → ort.IoU={cur[1]:.3f}  (fark {best_iou - cur[1]:+.3f})")
+        print(f"CURRENT: scale=1.00 → mean IoU={cur[1]:.3f}  (difference {best_iou - cur[1]:+.3f})")
     if cur and best_iou - cur[1] < 0.02:
-        print("\nSONUÇ: ölçek suçlu DEĞİL — 1.00 zaten tepeye yakın. Genişlik farkı")
-        print("  kesim/drape'ten geliyor; garment_scale'i değiştirmeyin.")
+        print("\nCONCLUSION: the scale is NOT to blame — 1.00 is already near the peak. The width")
+        print("  difference comes from cut/drape; do not change garment_scale.")
     else:
-        print(f"\nSONUÇ: ölçek anlamlı — foto yolunda garment_scale={best_sc:.2f} kullanın.")
-        print("  DİKKAT: SENTETİK yolu ELLEMEYİN (orada gövde de giysi de aynı SMPL-X'ten;")
-        print("  yeniden ölçekleme geçmişte hep hataydı — bkz. _prealign_garment).")
+        print(f"\nCONCLUSION: the scale matters — use garment_scale={best_sc:.2f} on the photo path.")
+        print("  CAREFUL: DO NOT TOUCH the SYNTHETIC path (there both body and garment come from the")
+        print("  same SMPL-X; rescaling has always been a mistake there — see _prealign_garment).")
     return 0
 
 

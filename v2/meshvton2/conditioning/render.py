@@ -1,18 +1,18 @@
-"""Render yardımcıları (pyrender öncelikli — Colab'da derleme YOK).
+"""Render helpers (pyrender first — NO compilation on Colab).
 
-- Faz 1: görünüm referansı (`render_appearance_ref`): GÖLGELİ gri kumaş render'ı.
-  FLAT (gölgesiz) idi; düz gri texture + FLAT = formsuz siluet lekesi, modele bilgi
-  geçmiyordu (2026-08-09 teşhisi) — artık `add_studio_lights` + mat PBR materyali.
-- Faz 2: ekran-uzayı geometri pass'leri (`render_geometry`): kamera-uzayı normal +
-  depth + giysi silüeti, CameraSpec'in K/R/T'siyle birebir (IntrinsicsCamera).
-  Normal pass'i "normalleri vertex-rengi yap + FLAT render" hilesiyle pyrender'da
-  çözülür; pytorch3d şart değil.
+- Phase 1: appearance reference (`render_appearance_ref`): a SHADED grey cloth render.
+  It used to be FLAT (unshaded); flat grey texture + FLAT = a formless silhouette blob, no
+  information reached the model (2026-08-09 diagnosis) — now `add_studio_lights` + a matte PBR material.
+- Phase 2: screen-space geometry passes (`render_geometry`): camera-space normal +
+  depth + garment silhouette, exactly matching CameraSpec's K/R/T (IntrinsicsCamera).
+  The normal pass is solved in pyrender with the "make normals vertex colors + FLAT render"
+  trick; pytorch3d is not required.
 
-Koordinat notu: CameraSpec OpenCV sözleşmesidir (+z ileri, +y aşağı); pyrender
-OpenGL ister (-z ileri, +y yukarı) — dönüşüm `_cv_pose_to_gl`.
+Coordinate note: CameraSpec follows the OpenCV convention (+z forward, +y down); pyrender
+wants OpenGL (-z forward, +y up) — the conversion is `_cv_pose_to_gl`.
 
-3D import'ları tembeldir: CPU-only geliştirme makinesinde modül import edilebilir
-kalır, render çağrısı net bir hata verir.
+3D imports are lazy: the module stays importable on a CPU-only dev machine and a render
+call raises a clear error.
 """
 
 from __future__ import annotations
@@ -26,21 +26,21 @@ from meshvton2.conditioning.builder import CameraSpec, GarmentAsset
 
 
 def zup_to_yup(verts: np.ndarray) -> np.ndarray:
-    """CLOTH3D Z-up -> PyTorch3D/kamera Y-up: (x,y,z) -> (x,z,-y). (v1 _geometric_align kuralı)"""
+    """CLOTH3D Z-up -> PyTorch3D/camera Y-up: (x,y,z) -> (x,z,-y). (the v1 _geometric_align rule)"""
     return np.stack([verts[:, 0], verts[:, 2], -verts[:, 1]], axis=1)
 
 
 def center_unit(verts: np.ndarray) -> np.ndarray:
-    """Merkeze al, en büyük eksen yarıçapını 1'e ölçekle (kamera kadrajı için)."""
+    """Centre, then scale the largest axis radius to 1 (for camera framing)."""
     v = verts - verts.mean(axis=0, keepdims=True)
     r = np.abs(v).max()
     return v / max(r, 1e-8)
 
 
 def force_textureless(asset: GarmentAsset) -> GarmentAsset:
-    """KALICI KURAL: appearance ref'e asla gerçek texture geçmez — yalnız giysinin
-    şekli (düz gri kumaş render'ı), renk/desen asla. `asset.texture` var olsun ya
-    da olmasın uygulanır (eğitim/eval/inference'ta tek ortak yol)."""
+    """PERMANENT RULE: a real texture never reaches the appearance ref — only the garment's
+    shape (a flat grey cloth render), never color/pattern. Applied whether or not
+    `asset.texture` exists (a single shared path across training/eval/inference)."""
     from dataclasses import replace
 
     return replace(
@@ -51,7 +51,7 @@ def force_textureless(asset: GarmentAsset) -> GarmentAsset:
 
 
 def _dir_light_pose(yaw_deg: float, pitch_deg: float) -> np.ndarray:
-    """pyrender DirectionalLight kendi -z ekseni boyunca aydınlatır; yaw/pitch ile yönlendir."""
+    """A pyrender DirectionalLight illuminates along its own -z axis; aim it with yaw/pitch."""
     y, p = np.deg2rad(yaw_deg), np.deg2rad(pitch_deg)
     ry = np.array([[np.cos(y), 0, np.sin(y)], [0, 1, 0], [-np.sin(y), 0, np.cos(y)]])
     rx = np.array([[1, 0, 0], [0, np.cos(p), -np.sin(p)], [0, np.sin(p), np.cos(p)]])
@@ -61,9 +61,9 @@ def _dir_light_pose(yaw_deg: float, pitch_deg: float) -> np.ndarray:
 
 
 def _matte(mesh):
-    """pyrender'ın varsayılan PBR materyali metallicFactor=1.0'dır — yönlü ışık
-    altında difüz bileşen sıfırlanıp kumaş METALİK/kapkara görünür. Kumaş ve ten
-    için mat yüzey zorunlu (ışıklandırmaya geçerken fark edildi, 2026-08-09)."""
+    """pyrender's default PBR material has metallicFactor=1.0 — under directional light
+    the diffuse component vanishes and cloth looks METALLIC/pitch black. A matte surface is
+    mandatory for cloth and skin (noticed while switching to lighting, 2026-08-09)."""
     for prim in mesh.primitives:
         mat = prim.material
         if hasattr(mat, "metallicFactor"):
@@ -73,14 +73,14 @@ def _matte(mesh):
 
 
 def add_studio_lights(pyrender, scene, cam_pose: np.ndarray) -> None:
-    """Kameraya bağlı 3-nokta ışık — GÖLGE üretir, yani gri kumaşın FORMU görünür.
+    """Camera-attached 3-point lighting — it produces SHADING, so the grey cloth's FORM is visible.
 
-    NEDEN (2026-08-09 teşhisi): appearance ref ve sentetik GT `RenderFlags.FLAT` ile
-    (ışıklama yok) render ediliyordu; düz gri texture + FLAT = tamamen düz bir siluet
-    lekesi. Giysinin kıvrımı/kol derinliği/omuz yuvarlaklığı modele HİÇ geçmiyordu
-    (siluet zaten control_depth_sil'de var) → model giysiyi uyduruyor, çıktı hayalet
-    gibi yarı saydam çıkıyordu. Işıklar KAMERAYA bağlı: 0/90/180/270 görüşlerinde
-    aynı yüzey aynı şekilde gölgelenir (multi-view tutarlılığı).
+    WHY (2026-08-09 diagnosis): the appearance ref and the synthetic GT were rendered with
+    `RenderFlags.FLAT` (no lighting); flat grey texture + FLAT = a completely flat silhouette
+    blob. The garment's folds/sleeve depth/shoulder roundness reached the model NOT AT ALL
+    (the silhouette is already in control_depth_sil) → the model made the garment up and the
+    output came out ghostly and semi-transparent. The lights are attached to the CAMERA: at the
+    0/90/180/270 views the same surface is shaded the same way (multi-view consistency).
     """
     for yaw, pitch, intensity in ((30.0, -20.0, 3.0), (-45.0, 10.0, 1.4), (160.0, -30.0, 0.9)):
         light = pyrender.DirectionalLight(color=np.ones(3), intensity=intensity)
@@ -97,22 +97,22 @@ def render_appearance_ref(
     device: str | None = None,
     backend: str = "auto",
 ) -> np.ndarray:
-    """Giysinin GÖLGELİ (formu görünür) gri kumaş ön render'ı.
+    """SHADED (form visible) grey cloth front render of the garment.
 
-    backend: "auto" (pytorch3d varsa o, yoksa pyrender) | "pytorch3d" | "pyrender".
-    pyrender saniyeler içinde pip'lenir (Colab'da derleme YOK) — Faz 1 bunu kullanır;
-    pytorch3d Faz 2'nin ekran-uzayı render'ları için gelecek.
+    backend: "auto" (pytorch3d if available, otherwise pyrender) | "pytorch3d" | "pyrender".
+    pyrender pip-installs in seconds (NO compilation on Colab) — Phase 1 uses it;
+    pytorch3d is coming for Phase 2's screen-space renders.
 
     Returns:
-        (H,W,3) uint8 RGB, beyaz arka plan.
+        (H,W,3) uint8 RGB, white background.
     """
     if asset.texture is None or asset.uv is None:
         raise ValueError(
-            f"{asset.garment_id}: appearance ref için texture+UV şart "
-            "(load_garment_asset bunu garanti eder)."
+            f"{asset.garment_id}: texture+UV are required for the appearance ref "
+            "(load_garment_asset guarantees this)."
         )
-    # pyrender SABİT: pytorch3d yolu hâlâ ambient-only (gölgesiz) — iki backend farklı
-    # görüntü üretirse eğitim/çıkarım tutarsız olur. Colab'da zaten pyrender kurulu.
+    # pyrender is FIXED: the pytorch3d path is still ambient-only (unshaded) — if the two
+    # backends produced different images, training/inference would be inconsistent. pyrender is already installed on Colab.
     if backend == "auto":
         backend = "pyrender"
     if backend == "pyrender":
@@ -121,8 +121,8 @@ def render_appearance_ref(
 
 
 def _prep_verts(asset: GarmentAsset, convert_zup: bool, azim: float) -> np.ndarray:
-    """Ortak hazırlık: eksen dönüşümü, merkez+ölçek, azim için Y-ekseni dönüşü
-    (kamerayı döndürmek yerine mesh'i -azim döndürmek eşdeğerdir)."""
+    """Shared preparation: axis conversion, centre+scale, Y-axis rotation for azim
+    (rotating the mesh by -azim is equivalent to rotating the camera)."""
     v = asset.verts
     if convert_zup:
         v = zup_to_yup(v)
@@ -147,12 +147,12 @@ def _render_pyrender(asset, *, size, azim, dist, convert_zup) -> np.ndarray:
     tm = trimesh.Trimesh(vertices=verts, faces=asset.faces, process=False)
     tm.visual = trimesh.visual.TextureVisuals(uv=asset.uv, image=Image.fromarray(asset.texture))
     scene = pyrender.Scene(ambient_light=np.full(3, 0.45), bg_color=(1.0, 1.0, 1.0, 1.0))
-    scene.add(_matte(pyrender.Mesh.from_trimesh(tm, smooth=True)))  # smooth: kıvrım sert facet olmasın
+    scene.add(_matte(pyrender.Mesh.from_trimesh(tm, smooth=True)))  # smooth: keep folds from becoming hard facets
     cam = pyrender.PerspectiveCamera(yfov=np.deg2rad(60.0), aspectRatio=w / h)
     pose = np.eye(4)
     pose[2, 3] = dist
     scene.add(cam, pose=pose)
-    add_studio_lights(pyrender, scene, pose)  # FLAT DEĞİL: gölge = giysinin formu
+    add_studio_lights(pyrender, scene, pose)  # NOT FLAT: shading = the garment's form
     renderer = pyrender.OffscreenRenderer(w, h)
     try:
         color, _ = renderer.render(scene)
@@ -177,14 +177,14 @@ def _render_pytorch3d(asset, *, size, azim, dist, convert_zup, device) -> np.nda
         from pytorch3d.structures import Meshes
     except ImportError as e:
         raise ImportError(
-            "pytorch3d gerekli (Colab: pip install "
+            "pytorch3d is required (Colab: pip install "
             '"git+https://github.com/facebookresearch/pytorch3d.git")'
         ) from e
 
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
     h, w = size
-    verts_np = _prep_verts(asset, convert_zup, azim)  # azim mesh'e bakıldı
+    verts_np = _prep_verts(asset, convert_zup, azim)  # azim applied to the mesh
 
     verts = torch.from_numpy(verts_np).float().unsqueeze(0).to(device)
     faces = torch.from_numpy(asset.faces).long().to(device)
@@ -197,7 +197,7 @@ def _render_pytorch3d(asset, *, size, azim, dist, convert_zup, device) -> np.nda
     )
     meshes = Meshes(verts=verts, faces=faces.unsqueeze(0), textures=tex)
 
-    R, T = look_at_view_transform(dist=dist, elev=0.0, azim=0.0)  # azim _prep_verts'te uygulandı
+    R, T = look_at_view_transform(dist=dist, elev=0.0, azim=0.0)  # azim was applied in _prep_verts
     cameras = FoVPerspectiveCameras(device=device, R=R.to(device), T=T.to(device))
     renderer = MeshRenderer(
         rasterizer=MeshRasterizer(
@@ -207,7 +207,7 @@ def _render_pytorch3d(asset, *, size, azim, dist, convert_zup, device) -> np.nda
         shader=SoftPhongShader(
             device=device,
             cameras=cameras,
-            lights=AmbientLights(device=device),  # gölgesiz: yalnız ambient (v1 FAZ A1)
+            lights=AmbientLights(device=device),  # unshaded: ambient only (v1 PHASE A1)
             blend_params=BlendParams(background_color=(1.0, 1.0, 1.0)),
         ),
     )
@@ -217,7 +217,7 @@ def _render_pytorch3d(asset, *, size, azim, dist, convert_zup, device) -> np.nda
 
 
 # --------------------------------------------------------------------------- #
-# Faz 2: ekran-uzayı geometri pass'leri (explicit CameraSpec, pyrender)
+# Phase 2: screen-space geometry passes (explicit CameraSpec, pyrender)
 # --------------------------------------------------------------------------- #
 
 
@@ -239,9 +239,9 @@ def _intrinsics_camera(camera: CameraSpec, pyrender):
 
 
 def _camera_space_normals(verts: np.ndarray, faces: np.ndarray, camera: CameraSpec) -> np.ndarray:
-    """Vertex normallerini kamera uzayına çevirir; renk kodlaması [0,1] = (n+1)/2.
-    Kamera-uzayı normal, görüşten bağımsız aynı yüzeye aynı rengi verir (koşullama
-    tutarlılığı) — v1'in dünya-uzayı normal'inin aksine."""
+    """Converts vertex normals into camera space; color encoding [0,1] = (n+1)/2.
+    Camera-space normals give the same surface the same color regardless of view
+    (conditioning consistency) — unlike v1's world-space normals."""
     from meshvton2.conditioning.lbs_drape import vertex_normals
 
     n_world = vertex_normals(verts, faces)
@@ -255,8 +255,8 @@ def _flat_scene(pyrender, bg=(0.0, 0.0, 0.0)):
 
 
 def _add_colored(pyrender, scene, verts, faces, colors01, *, smooth: bool = False):
-    """smooth=False (varsayılan): geometri pass'leri — vertex rengi VERİ taşır (normal/id),
-    interpolasyon bozmasın. smooth=True yalnız görsel (GT) render'da."""
+    """smooth=False (default): geometry passes — vertex color carries DATA (normal/id),
+    interpolation must not corrupt it. smooth=True only in the visual (GT) render."""
     import trimesh
 
     tm = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
@@ -275,16 +275,16 @@ def render_geometry(
     *,
     size: tuple[int, int] = (1024, 768),
 ) -> dict:
-    """Kontrol kanalları için ekran-uzayı pass'leri (hepsi CameraSpec kamerasıyla).
+    """Screen-space passes for the control channels (all with the CameraSpec camera).
 
-    garment_verts=None → gövde-only mod (gerçek-veri eğitimi: mesh yok; silüet
-    çağıran tarafça parse'tan sağlanır) — garment_sil sıfır döner.
+    garment_verts=None → body-only mode (real-data training: no mesh; the silhouette is
+    supplied by the caller from the parse) — garment_sil is returned as zeros.
 
     Returns dict:
-        normal   (H,W,3) float32 [0,1] — kamera-uzayı sahne normalleri (gövde+giysi)
-        depth    (H,W)   float32 [0,1] — sahne maskesi içinde min-max normalize; arka plan 0
-        garment_sil (H,W) bool         — yalnız giysinin görünür silüeti (derinlik testli)
-        scene_mask  (H,W) bool         — gövde∪giysi maskesi
+        normal   (H,W,3) float32 [0,1] — camera-space scene normals (body+garment)
+        depth    (H,W)   float32 [0,1] — min-max normalized within the scene mask; background 0
+        garment_sil (H,W) bool         — only the garment's visible silhouette (depth tested)
+        scene_mask  (H,W) bool         — body∪garment mask
     """
     os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
     import pyrender
@@ -302,7 +302,7 @@ def render_geometry(
             r.delete()
         return color, depth
 
-    # Pass 1: birleşik sahne — normal renkleri + depth buffer
+    # Pass 1: combined scene — normal colors + depth buffer
     scene = _flat_scene(pyrender)
     _add_colored(pyrender, scene, body_verts, body_faces,
                  _camera_space_normals(body_verts, body_faces, camera))
@@ -312,7 +312,7 @@ def render_geometry(
     normal_rgb, depth_raw = _render(scene)
     scene_mask = depth_raw > 0
 
-    # Pass 2: giysi kimlik rengi (derinlik testi gövde önünü/arkasını doğru ayırır)
+    # Pass 2: garment id color (the depth test correctly separates the body's front from its back)
     if garment_verts is not None:
         scene2 = _flat_scene(pyrender)
         _add_colored(pyrender, scene2, body_verts, body_faces, np.zeros((len(body_verts), 3)))
@@ -327,7 +327,7 @@ def render_geometry(
         d = depth_raw[scene_mask]
         lo, hi = float(d.min()), float(d.max())
         span = max(hi - lo, 1e-6)
-        # yakın=1, uzak→0'a: koşullamada yakınlık sinyali pozitif olsun
+        # near=1, far→0: make the proximity signal positive in the conditioning
         depth[scene_mask] = 1.0 - (depth_raw[scene_mask] - lo) / span
 
     return {
@@ -347,9 +347,9 @@ def render_textured_scene(
     camera: CameraSpec,
     *,
     size: tuple[int, int] = (1024, 768),
-    bg=(0.82, 0.82, 0.84),  # VITON-HD stüdyo grisi
+    bg=(0.82, 0.82, 0.84),  # VITON-HD studio grey
 ) -> np.ndarray:
-    """Sentetik GT: dokulu giysi + renkli gövde, flat ışık. (H,W,3) uint8."""
+    """Synthetic GT: textured garment + colored body, flat light. (H,W,3) uint8."""
     os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
     import pyrender
     import trimesh
@@ -365,8 +365,8 @@ def render_textured_scene(
     scene.add(_matte(pyrender.Mesh.from_trimesh(tm, smooth=True)))
     cam_pose = _cv_pose_to_gl(camera)
     scene.add(_intrinsics_camera(camera, pyrender), pose=cam_pose)
-    # FLAT DEĞİL: eğitim HEDEFİ gölgesiz düz renk olursa model de gölgesiz düz
-    # (=yarı saydam görünen) giysi üretmeyi öğrenir — 2026-08-09 teşhisi.
+    # NOT FLAT: if the training TARGET is unshaded flat color, the model learns to produce
+    # unshaded flat (= semi-transparent looking) garments too — 2026-08-09 diagnosis.
     add_studio_lights(pyrender, scene, cam_pose)
     r = pyrender.OffscreenRenderer(w, h)
     try:
@@ -383,7 +383,7 @@ def render_body_mask(
     *,
     size: tuple[int, int] = (1024, 768),
 ) -> np.ndarray:
-    """Yalnız gövde silüeti (H,W) bool — kamera doğrulama (reprojection IoU) için."""
+    """Body silhouette only (H,W) bool — for camera validation (reprojection IoU)."""
     os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
     import pyrender
 

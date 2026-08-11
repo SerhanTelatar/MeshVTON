@@ -1,8 +1,8 @@
-"""Genel eğitim döngüsü (v1 trainer.py iskeletinin sadeleşmiş hali).
+"""Generic training loop (a simplified version of the v1 trainer.py skeleton).
 
-Model/backbone bilgisi YOK: `step_fn(batch) -> loss` enjekte edilir (FLUX'a dokunan
-her şey model/flux_tryon.py'de kalır). Colab-güvenli: her ckpt_every adımda
-trainable durum + optimizer + scheduler + adım sayısı kaydedilir; resume birebir.
+It knows NOTHING about the model/backbone: `step_fn(batch) -> loss` is injected (everything
+that touches FLUX stays in model/flux_tryon.py). Colab-safe: every ckpt_every steps the
+trainable state + optimizer + scheduler + step count are saved; resume is exact.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ class TrainConfig:
     grad_accum: int = 1
     max_grad_norm: float = 1.0
     ckpt_every: int = 500
-    keep_last: int = 2      # eski ckpt'ler silinir (Drive kotası; final.pt etkilenmez)
+    keep_last: int = 2      # older ckpts are deleted (Drive quota; final.pt is unaffected)
     log_every: int = 50
     out_dir: str = "v2/checkpoints/stage1"
     extra: dict = field(default_factory=dict)
@@ -41,10 +41,10 @@ def cosine_warmup(step: int, warmup: int, total: int) -> float:
 class TrainLoop:
     """
     Args:
-        params: eğitilecek parametreler (LoRA + control_proj vb.).
-        step_fn: batch -> skaler loss (autocast/backbone çağrısı içeride).
-        state_provider/state_loader: trainable ağırlıkların ckpt sözlüğü
-            (LoRA+sidecar'ı toplayıp geri yükleyen çağrılar — loop bilmez).
+        params: the parameters to train (LoRA + control_proj etc.).
+        step_fn: batch -> scalar loss (the autocast/backbone call happens inside).
+        state_provider/state_loader: the ckpt dict of the trainable weights
+            (calls that gather and restore LoRA+sidecar — the loop does not know about them).
     """
 
     def __init__(
@@ -59,7 +59,7 @@ class TrainLoop:
     ):
         self.params = [p for p in params if p.requires_grad]
         if not self.params:
-            raise ValueError("Eğitilecek parametre yok")
+            raise ValueError("No parameters to train")
         self.step_fn = step_fn
         self.cfg = cfg
         self.state_provider = state_provider
@@ -85,8 +85,8 @@ class TrainLoop:
             },
             path,
         )
-        (path.parent / "latest.pt").write_text(str(path))  # işaretçi dosya
-        # rotasyon: yalnız son keep_last ckpt kalsın (100 adımda bir 1.2GB → kota koruması)
+        (path.parent / "latest.pt").write_text(str(path))  # pointer file
+        # rotation: keep only the last keep_last ckpts (1.2GB every 100 steps → quota protection)
         olds = sorted(path.parent.glob("ckpt_*.pt"))[: -max(self.cfg.keep_last, 1)]
         for old in olds:
             old.unlink(missing_ok=True)
@@ -99,14 +99,14 @@ class TrainLoop:
         self.sched.load_state_dict(ck["scheduler"])
         if ck.get("trainables") is not None and self.state_loader:
             self.state_loader(ck["trainables"])
-        self.log(f"resume: {path} (adım {self.step})")
+        self.log(f"resume: {path} (step {self.step})")
 
     def maybe_resume(self) -> None:
         latest = Path(self.cfg.out_dir) / "latest.pt"
         if latest.exists():
             self.resume(latest.read_text().strip())
 
-    # -------------------------------- döngü -------------------------------- #
+    # -------------------------------- loop -------------------------------- #
 
     def run(self, loader) -> dict:
         cfg = self.cfg
@@ -131,8 +131,8 @@ class TrainLoop:
             running += accum_loss
             if self.step % cfg.log_every == 0:
                 self.log(
-                    f"adım {self.step}/{cfg.max_steps} loss={running / cfg.log_every:.4f} "
-                    f"lr={self.sched.get_last_lr()[0]:.2e} {(time.time() - t0) / cfg.log_every:.2f}s/adım"
+                    f"step {self.step}/{cfg.max_steps} loss={running / cfg.log_every:.4f} "
+                    f"lr={self.sched.get_last_lr()[0]:.2e} {(time.time() - t0) / cfg.log_every:.2f}s/step"
                 )
                 running, t0 = 0.0, time.time()
             if self.step % cfg.ckpt_every == 0 or self.step == cfg.max_steps:

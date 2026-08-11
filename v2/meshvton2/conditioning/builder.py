@@ -1,19 +1,19 @@
-"""build_conditioning() — koşullama üretiminin TEK kaynağı (parite sözleşmesi).
+"""build_conditioning() — the SINGLE source of conditioning generation (parity contract).
 
-v1'in en pahalı dersi: eğitim ön-işlemesi ile inference koşullaması farklı kod
-yollarından üretilince ControlNet dağıtım-dışı girdi aldı ve sonuçları bozdu.
-v2 kuralı: eğitim ön-işleme (scripts/preprocess_vitonhd.py), sentetik üretici
-(synth/generate.py, person_image=None modu) ve inference (inference/run_tryon.py)
-İSTİSNASIZ bu modüldeki build_conditioning()'i çağırır. tests/test_parity.py
-bunu iki yoldan aynı girdiyle çağırıp tensör eşitliğini zorlar.
+v1's most expensive lesson: when training preprocessing and inference conditioning came
+from different code paths, the ControlNet got out-of-distribution input and ruined results.
+v2 rule: training preprocessing (scripts/preprocess_vitonhd.py), the synthetic generator
+(synth/generate.py, person_image=None mode) and inference (inference/run_tryon.py)
+call build_conditioning() from this module WITHOUT EXCEPTION. tests/test_parity.py
+calls it from both paths with the same input and enforces tensor equality.
 
-Bu imza Faz 0'da donmuştur; alan eklemek serbest, mevcut alanı değiştirmek yasak.
+This signature was frozen in Phase 0; adding fields is allowed, changing existing ones is not.
 
-İMPLEMENTASYON SEÇİMİ: gerçek hat (SMPL-X + LBS drape + pyrender) varsayılandır.
-`MESHVTON2_STUB=1` ortam değişkeni deterministik stub'ı seçer — YALNIZ 3D
-bağımlılıkları olmayan geliştirme makinesindeki testler için (tests/conftest.py
-bunu otomatik ayarlar). Üretim scriptleri `assert_real_impl()` çağırır: v1'in
-"sessiz placeholder" felaketi yapısal olarak engellenir.
+IMPLEMENTATION CHOICE: the real path (SMPL-X + LBS drape + pyrender) is the default.
+The `MESHVTON2_STUB=1` env var selects the deterministic stub — ONLY for tests on a
+dev machine without 3D dependencies (tests/conftest.py sets it automatically).
+Production scripts call `assert_real_impl()`: v1's "silent placeholder" disaster is
+structurally prevented.
 """
 
 from __future__ import annotations
@@ -28,78 +28,78 @@ from typing import Any
 import numpy as np
 import torch
 
-CANONICAL_SIZE = (1024, 768)  # (height, width) — configs/base.yaml ile aynı
+CANONICAL_SIZE = (1024, 768)  # (height, width) — same as configs/base.yaml
 
-# Askı payı [m]: giysi üst kenarının omuz (üst giyim) / pelvis (alt giyim) referansına
-# göre dikey ofseti.
+# Hang pad [m]: vertical offset of the garment's top edge relative to the shoulder
+# (upper body) / pelvis (lower body) reference.
 #
-# +0.06 DOĞRU DEĞERDİR, DEĞİŞTİRME. Gerekçe: SMPL j[16]/j[17] omuz EKLEMİ merkezidir,
-# omzun üstü değil (~6cm altı) — tişört yaka/omuz dikişi ancak +6cm ile omza oturur.
-# 2026-07-04 sentetik drape QA'sı bu değerle geçti.
+# +0.06 IS THE CORRECT VALUE, DO NOT CHANGE. Rationale: SMPL j[16]/j[17] is the shoulder
+# JOINT centre, not the top of the shoulder (~6cm below) — a t-shirt collar/shoulder seam
+# only sits on the shoulder with +6cm. The 2026-07-04 synthetic drape QA passed with this value.
 #
-# 2026-08-09'da kısa süre -0.06 denendi ([[meshvton-v2-inference-alignment]]'teki foto
-# kalibrasyonuna dayanarak) ve QA görselinde giysi KOLTUKALTINA kaydı (tişört straplez
-# büstiyer gibi göründü) → geri alındı. Oradaki -0.06, düzeltilmemiş person_square_bbox
-# hatasını telafi eden bir yamaydı; bbox artık her yolda doğru olduğu için gereksiz.
+# On 2026-08-09 -0.06 was briefly tried (based on the photo calibration in
+# [[meshvton-v2-inference-alignment]]) and in the QA render the garment slid to the ARMPIT
+# (the t-shirt looked like a strapless bustier) → reverted. That -0.06 was a patch
+# compensating for an uncorrected person_square_bbox bug; the bbox is now correct on every path, so it is unnecessary.
 DEFAULT_HANG_PAD = 0.06
 
-# FOTOĞRAF yolu için AYRI değer. 2026-08-10 ampirik kalibrasyonu
-# (v2/scripts/calibrate_hang.py, kamera kapısından geçmiş 5 kişi): +0.06 giysiyi
-# gerçek giysiye göre ~21 puan YUKARI asıyor (yüzün üstüne biniyor);
-# mesh<->parser IoU +0.06'da 0.295, -0.12'de 0.480. Uçtan uca doğrulandı:
-# yerleşim IoU (placement_iou.py) 0.5815 -> 0.6829, mesh ayırt ediciliği değişmedi
-# (+0.0236 -> +0.0219, aynı 10 kombo). geo_iou DÜŞTÜ ama o metrik kendi verdiğimiz
-# silüeti hedef aldığı için hedefin bozukluğunu göremiyor — bkz. placement_iou.py.
+# SEPARATE value for the PHOTO path. Empirical calibration on 2026-08-10
+# (v2/scripts/calibrate_hang.py, the 5 people that passed the camera gate): +0.06 hangs the
+# garment ~21 points HIGHER than the real garment (it rides over the face);
+# mesh<->parser IoU is 0.295 at +0.06 and 0.480 at -0.12. Verified end to end:
+# placement IoU (placement_iou.py) 0.5815 -> 0.6829, mesh specificity unchanged
+# (+0.0236 -> +0.0219, same 10 combos). geo_iou DROPPED, but that metric targets the
+# silhouette we hand it, so it cannot see a broken target — see placement_iou.py.
 #
-# SENTETİK yol +0.06'da KALIR: orada gövde de giysi de aynı SMPL-X'ten geliyor ve
-# 2026-07-04 drape QA'sı o değerle geçti; -0.06 denendiğinde giysi koltukaltına
-# kaymıştı. İki yolun farklı değer istemesi HMR2 (foto) ile SMPL-X (sentetik)
-# gövdelerinin farklı olmasından; tek global değer ikisine birden uymuyor.
+# The SYNTHETIC path STAYS at +0.06: there both body and garment come from the same
+# SMPL-X and the 2026-07-04 drape QA passed with that value; when -0.06 was tried the
+# garment slid into the armpit. The two paths need different values because HMR2 (photo)
+# and SMPL-X (synthetic) bodies differ; no single global value fits both.
 PHOTO_HANG_PAD = -0.12
 
-# FOTOĞRAF yolu giysi ölçeği. 2026-08-10 kalibrasyonu (calibrate_scale.py, aynı 5
-# doğrulanmış kişi, hang_pad=-0.12): mesh<->parser IoU 1.00'da 0.481, tepe 1.25'te
-# 0.555. Tepe SINIRDA değil (1.10-1.70 tarandı, 1.30'dan sonra düşüyor) ve bağımsız
-# bir tutarlılık kontrolü geçiyor: 1.25'te silüet alanı %19.2, parser'ın ölçtüğü
-# gerçek giysi alanı %18.8 — iki farklı yoldan aynı nokta.
+# Garment scale for the PHOTO path. 2026-08-10 calibration (calibrate_scale.py, the same 5
+# verified people, hang_pad=-0.12): mesh<->parser IoU is 0.481 at 1.00, peaking at 0.555
+# at 1.25. The peak is NOT at the boundary (1.10-1.70 swept, it drops after 1.30) and it
+# passes an independent consistency check: at 1.25 the silhouette covers 19.2% of the frame,
+# the real garment area measured by the parser is 18.8% — the same point from two paths.
 #
-# Yorum: CLOTH3D giysileri HMR2'nin kestirdiği bedenlere göre sistematik olarak
-# KÜÇÜK kalıyor (sentetik/gerçek beden dağılımı uyumsuzluğu). SENTETİK yol 1.0'da
-# KALIR — orada gövde de giysi de aynı SMPL-X'ten gelir ve yeniden ölçekleme
-# geçmişte iki kez hata çıktı (bkz. _prealign_garment ders zinciri).
+# Interpretation: CLOTH3D garments are systematically SMALL relative to the bodies HMR2
+# estimates (synthetic/real body distribution mismatch). The SYNTHETIC path STAYS at 1.0 —
+# there both body and garment come from the same SMPL-X, and rescaling turned out to be a
+# mistake twice in the past (see the _prealign_garment lesson chain).
 PHOTO_GARMENT_SCALE = 1.25
 
-# use_texture: KALICI KURAL gereği varsayılan False — appearance ref her zaman düz gri
-# (renk/desen sadakati bu projenin hedefi değil). TEK meşru kullanımı: 2026-07-06'da
-# texture'lı ref + VITON-HD karışımıyla eğitilmiş ESKİ checkpoint'i (stage1_july/
-# ckpt_004000.pt) çalıştırmak — o ağırlıklar texture'lı ref görmeye alışkın, gri ref
-# verilirse dağıtım-DIŞI girdi alır. Yeni/dokusuz checkpoint'lerde ASLA True yapma.
+# use_texture: defaults to False per the PERMANENT RULE — the appearance ref is always flat
+# grey (color/pattern fidelity is not a goal of this project). Its ONLY legitimate use: running
+# the OLD checkpoint trained on 2026-07-06 with textured refs + a VITON-HD mix (stage1_july/
+# ckpt_004000.pt) — those weights are used to seeing textured refs and would get OUT-of-
+# distribution input from a grey ref. NEVER set True for new/textureless checkpoints.
 
 
 def implementation() -> str:
-    """"real" | "stub" — her çağrıda env'den okunur (test izolasyonu için)."""
+    """"real" | "stub" — read from the env on every call (for test isolation)."""
     return "stub" if os.environ.get("MESHVTON2_STUB") == "1" else "real"
 
 
 def assert_real_impl() -> None:
-    """Üretim giriş noktaları (synth üretici, ön-işleme, run_tryon) bunu çağırır."""
+    """Production entry points (synth generator, preprocessing, run_tryon) call this."""
     if implementation() != "real":
         raise RuntimeError(
-            "build_conditioning STUB modda (MESHVTON2_STUB=1) — üretimde yasak. "
-            "Bu, v1'in 'eğitilmemiş placeholder sessizce çalıştı' hatasının panzehiridir."
+            "build_conditioning is in STUB mode (MESHVTON2_STUB=1) — forbidden in production. "
+            "This is the antidote to v1's 'an untrained placeholder ran silently' bug."
         )
 
 
 # --------------------------------------------------------------------------- #
-# Veri tipleri
+# Data types
 # --------------------------------------------------------------------------- #
 
 
 @dataclass(frozen=True)
 class CameraSpec:
-    """Serileştirilebilir kamera: tam-kare intrinsics + dünya->kamera dönüşümü."""
+    """Serializable camera: full-frame intrinsics + world->camera transform."""
 
-    K: tuple  # 3x3, iç içe tuple
+    K: tuple  # 3x3, nested tuple
     R: tuple  # 3x3
     T: tuple  # 3
     source: str  # "photo" | "orbit:90" | "synth" ...
@@ -115,14 +115,14 @@ class CameraSpec:
 
 @dataclass(frozen=True)
 class PhotoView:
-    """Fotoğrafın kendi kamerası (HMR2 pred_cam'den türetilir)."""
+    """The photo's own camera (derived from HMR2 pred_cam)."""
 
 
 @dataclass(frozen=True)
 class OrbitView:
-    """Foto kamerasının pelvis dikey ekseni etrafında döndürülmüş hali."""
+    """The photo camera rotated around the pelvis vertical axis."""
 
-    azim_deg: int  # 0/90/180/270 (0 = foto kamerasıyla aynı yön)
+    azim_deg: int  # 0/90/180/270 (0 = same direction as the photo camera)
 
 
 ViewSpec = PhotoView | OrbitView
@@ -130,45 +130,45 @@ ViewSpec = PhotoView | OrbitView
 
 @dataclass(frozen=True)
 class GarmentAsset:
-    """Yüklenmiş giysi varlığı. Faz 2'de garment.py::load_garment_asset doldurur."""
+    """Loaded garment asset. Filled by garment.py::load_garment_asset in Phase 2."""
 
     garment_id: str
     verts: np.ndarray          # (V,3) float32
     faces: np.ndarray          # (F,3) int64
     uv: np.ndarray | None      # (V,2) float32
     texture: np.ndarray | None  # (Ht,Wt,3) uint8
-    lbs_cache: str | None = None  # garment_id.lbs.npz yolu (Faz 2)
+    lbs_cache: str | None = None  # path to garment_id.lbs.npz (Phase 2)
 
 
 @dataclass(frozen=True)
 class ConditioningBundle:
-    """build_conditioning çıktısı. Tüm tensörler CPU float32, (C,H,W)."""
+    """Output of build_conditioning. All tensors CPU float32, (C,H,W)."""
 
     agnostic_rgb: torch.Tensor      # (3,H,W) [-1,1]
     inpaint_mask: torch.Tensor      # (1,H,W) {0,1}
-    control_normal: torch.Tensor    # (3,H,W) [-1,1] kamera-uzayı sahne normalleri (body+giysi)
-    control_depth_sil: torch.Tensor  # (3,H,W) [-1,1]: [depth, depth, giysi silüeti]
-    appearance_ref: torch.Tensor    # (3,H,W) [-1,1] GÖLGELİ gri kumaş render'ı (texture ASLA)
+    control_normal: torch.Tensor    # (3,H,W) [-1,1] camera-space scene normals (body+garment)
+    control_depth_sil: torch.Tensor  # (3,H,W) [-1,1]: [depth, depth, garment silhouette]
+    appearance_ref: torch.Tensor    # (3,H,W) [-1,1] SHADED grey cloth render (NEVER textured)
     camera: CameraSpec
-    meta: dict = field(default_factory=dict)  # synth modunda meta["gt_rgb"] içerir
+    meta: dict = field(default_factory=dict)  # contains meta["gt_rgb"] in synth mode
 
     def __post_init__(self):
         h, w = self.inpaint_mask.shape[-2:]
         for name in ("agnostic_rgb", "control_normal", "control_depth_sil", "appearance_ref"):
             t = getattr(self, name)
             if t.shape != (3, h, w):
-                raise ValueError(f"{name}: beklenen (3,{h},{w}), gelen {tuple(t.shape)}")
+                raise ValueError(f"{name}: expected (3,{h},{w}), got {tuple(t.shape)}")
             if t.dtype != torch.float32:
-                raise ValueError(f"{name}: float32 olmalı, gelen {t.dtype}")
+                raise ValueError(f"{name}: must be float32, got {t.dtype}")
         if self.inpaint_mask.shape != (1, h, w):
-            raise ValueError(f"inpaint_mask: beklenen (1,{h},{w}), gelen {tuple(self.inpaint_mask.shape)}")
+            raise ValueError(f"inpaint_mask: expected (1,{h},{w}), got {tuple(self.inpaint_mask.shape)}")
         uniq = torch.unique(self.inpaint_mask)
         if not torch.all((uniq == 0) | (uniq == 1)):
-            raise ValueError("inpaint_mask ikili {0,1} olmalı")
+            raise ValueError("inpaint_mask must be binary {0,1}")
 
 
 # --------------------------------------------------------------------------- #
-# Tek kaynak fonksiyon
+# Single-source function
 # --------------------------------------------------------------------------- #
 
 
@@ -180,47 +180,47 @@ def build_conditioning(
     *,
     size: tuple[int, int] = CANONICAL_SIZE,
     device: str = "cpu",
-    person_prep: Any | None = None,  # PersonPrep — foto modunda ZORUNLU (agnostic+mask kaynağı)
-    appearance_ref_image: np.ndarray | None = None,  # garment=None modunda ZORUNLU (ürün fotoğrafı)
-    geometry_mask: bool = True,  # foto+mesh: maske = parse ∪ dilate(giysi silüeti); False = yalnız parse
-    hang_pad: float = DEFAULT_HANG_PAD,  # giysi üst kenarı askı payı [m] (bkz. DEFAULT_HANG_PAD)
-    garment_scale: float = 1.0,  # 1.0 = CLOTH3D metrik ölçeği (bkz. _prealign_garment)
-    use_texture: bool = False,  # KURAL GEREĞİ False — bkz. use_texture notu yukarıda
+    person_prep: Any | None = None,  # PersonPrep — REQUIRED in photo mode (agnostic+mask source)
+    appearance_ref_image: np.ndarray | None = None,  # REQUIRED in garment=None mode (product photo)
+    geometry_mask: bool = True,  # photo+mesh: mask = parse ∪ dilate(garment silhouette); False = parse only
+    hang_pad: float = DEFAULT_HANG_PAD,  # garment top-edge hang pad [m] (see DEFAULT_HANG_PAD)
+    garment_scale: float = 1.0,  # 1.0 = CLOTH3D metric scale (see _prealign_garment)
+    use_texture: bool = False,  # False BY RULE — see the use_texture note above
 ) -> ConditioningBundle:
-    """Koşullama demetini üretir.
+    """Builds the conditioning bundle.
 
     Args:
-        person_image: (H,W,3) uint8 RGB fotoğraf; None => sentetik mod
-            (gerçek foto yok, GT render meta["gt_rgb"] olarak döner).
+        person_image: (H,W,3) uint8 RGB photo; None => synthetic mode
+            (no real photo, the GT render is returned as meta["gt_rgb"]).
         smplx_params: betas(10), body_pose(63), global_orient(3), transl(3),
-            pred_cam(3: s,tx,ty), bbox(4: x,y,w,h) — HMR2 adapter sözleşmesi.
-        garment: yüklenmiş giysi varlığı (LBS cache'i ile) VEYA None = "gerçek-veri
-            modu": kişinin GİYDİĞİ giysinin mesh'i yok (VITON-HD eğitimi) →
-            geometri gövde-only, giysi silüeti parse'tan, görünüm referansı
-            appearance_ref_image'dan (ürün fotoğrafı). Yalnız foto modunda geçerli;
-            süpervizyon tutarlılığının şartı (GT'deki giysi ≠ rastgele mesh olamaz).
-        view: PhotoView() = fotoğrafın kamerası; OrbitView(azim) = döndürülmüş.
-        size: (height, width); tek geçerli değer CANONICAL_SIZE, testler küçük
-            boyut kullanabilir.
+            pred_cam(3: s,tx,ty), bbox(4: x,y,w,h) — HMR2 adapter contract.
+        garment: loaded garment asset (with its LBS cache) OR None = "real-data
+            mode": there is no mesh for the garment the person is WEARING (VITON-HD
+            training) → geometry is body-only, the garment silhouette comes from the
+            parse, the appearance reference from appearance_ref_image (product photo).
+            Valid only in photo mode; required for supervision consistency (the GT garment cannot be a random mesh).
+        view: PhotoView() = the photo's camera; OrbitView(azim) = rotated.
+        size: (height, width); the only valid value is CANONICAL_SIZE, tests may use a
+            small size.
 
     Returns:
-        ConditioningBundle — eğitim, sentetik üretim ve inference için birebir aynı.
+        ConditioningBundle — identical for training, synthetic generation and inference.
     """
     if person_image is not None:
         person_image = np.ascontiguousarray(person_image)
         if person_image.ndim != 3 or person_image.shape[2] != 3 or person_image.dtype != np.uint8:
-            raise ValueError("person_image (H,W,3) uint8 RGB olmalı")
+            raise ValueError("person_image must be (H,W,3) uint8 RGB")
     required = {"betas", "body_pose", "global_orient", "pred_cam", "bbox"}
     missing = required - set(smplx_params)
     if missing:
-        raise ValueError(f"smplx_params eksik alanlar: {sorted(missing)} (hmr2_adapter pred_cam+bbox döndürmeli)")
+        raise ValueError(f"smplx_params missing fields: {sorted(missing)} (hmr2_adapter must return pred_cam+bbox)")
     if not isinstance(view, (PhotoView, OrbitView)):
-        raise TypeError(f"view PhotoView|OrbitView olmalı, gelen {type(view)}")
+        raise TypeError(f"view must be PhotoView|OrbitView, got {type(view)}")
     if garment is None:
         if person_image is None:
-            raise ValueError("Sentetik mod (person_image=None) giysi mesh'i olmadan üretilemez")
+            raise ValueError("Synthetic mode (person_image=None) cannot be built without a garment mesh")
         if appearance_ref_image is None:
-            raise ValueError("garment=None modunda appearance_ref_image (ürün fotoğrafı) zorunlu")
+            raise ValueError("appearance_ref_image (product photo) is required in garment=None mode")
 
     if implementation() == "stub":
         return _build_impl_stub(
@@ -236,7 +236,7 @@ def build_conditioning(
 
 
 # --------------------------------------------------------------------------- #
-# Gerçek implementasyon (Faz 2): SMPL-X + LBS drape + ekran-uzayı render
+# Real implementation (Phase 2): SMPL-X + LBS drape + screen-space render
 # --------------------------------------------------------------------------- #
 
 
@@ -247,46 +247,46 @@ def _to_tensor01(img01: np.ndarray) -> torch.Tensor:
 
 def _prealign_garment(gverts: np.ndarray, rest: dict, garment_id: str = "",
                       hang_pad: float = DEFAULT_HANG_PAD, scale: float = 1.0) -> np.ndarray:
-    """Bağlama öncesi hizalama: ÖLÇEK YOK, sadece eksen çevir + askı hizala.
+    """Pre-binding alignment: NO SCALING, only axis conversion + hang alignment.
 
-    Ders zinciri (QA'da yakalandı): (1) gövde-genişliği ölçeği T-poz kulaç
-    açıklığını ölçüp giysiyi 3x şişirdi; (2) omuz-heuristik ölçeği ise zaten
-    DOĞRU ölçekli CLOTH3D giysisini küçültüp gövdenin içine soktu (clearance
-    ~0.9). Gerçek: CLOTH3D giysileri metre ölçeğinde ve SMPL bedenine göre
-    modelli — yeniden ölçekleme her durumda hataydı. Şimdi: Z-up→Y-up çevir,
-    x/z'yi pelvise ortala, dikeyde 'askı' hizala: üst/elbise omuzdan asılır
-    (üst kenar ≈ omuz hizası + pay), alt giyim belden (üst kenar ≈ pelvis + pay)."""
+    Lesson chain (caught in QA): (1) a body-width scale measured the T-pose arm
+    span and inflated the garment 3x; (2) a shoulder-heuristic scale shrank an
+    already CORRECTLY scaled CLOTH3D garment and pushed it inside the body
+    (clearance ~0.9). Reality: CLOTH3D garments are in metre scale and modelled
+    against the SMPL body — rescaling was a mistake in every case. Now: convert
+    Z-up→Y-up, centre x/z on the pelvis, align vertically by 'hang': tops/dresses
+    hang from the shoulder (top edge ≈ shoulder line + pad), lower body from the waist (top edge ≈ pelvis + pad)."""
     from meshvton2.conditioning.render import zup_to_yup
 
     j = rest["joints"]
     pelvis = j[0]
     mid_sh = (j[16] + j[17]) / 2.0
 
-    g = zup_to_yup(np.asarray(gverts, np.float64))  # metrik ölçek KORUNUR
-    # scale=1.0 varsayılanı yukarıdaki "yeniden ölçekleme HER ZAMAN hataydı" dersini
-    # korur. 1.0'dan farklı değer YALNIZCA ampirik kalibrasyon içindir
-    # (v2/scripts/calibrate_scale.py): foto yolunda gövde HMR2'den geldiği için
-    # CLOTH3D'nin SMPL-referanslı ölçeği tam oturmayabiliyor. Ölçek giysinin KENDİ
-    # merkezine göre uygulanır; ardından gelen ortalama+askı hizalaması bozulmaz.
+    g = zup_to_yup(np.asarray(gverts, np.float64))  # metric scale is PRESERVED
+    # The scale=1.0 default preserves the "rescaling was ALWAYS a mistake" lesson above.
+    # A value other than 1.0 is ONLY for empirical calibration
+    # (v2/scripts/calibrate_scale.py): on the photo path the body comes from HMR2, so
+    # CLOTH3D's SMPL-referenced scale may not fit exactly. The scale is applied around the
+    # garment's OWN centre; the centring + hang alignment that follows is unaffected.
     if scale != 1.0:
         c = (g.max(axis=0) + g.min(axis=0)) / 2.0
         g = (g - c) * scale + c
     g[:, 0] += pelvis[0] - (g[:, 0].max() + g[:, 0].min()) / 2.0
     g[:, 2] += pelvis[2] - (g[:, 2].max() + g[:, 2].min()) / 2.0
-    # Hizalama giysinin ÜST KENARINDAN (max y) yapılır — tişörtte yaka rimi, straplez
-    # üstte göğüs bandı. Tek global ofset her giysi tipi için ideal olamaz; varsayılan
-    # tişört/top ailesine göre seçilidir (bkz. DEFAULT_HANG_PAD).
+    # Alignment uses the garment's TOP EDGE (max y) — the collar rim on a t-shirt, the
+    # chest band on a strapless top. A single global offset cannot be ideal for every garment
+    # type; the default is chosen for the t-shirt/top family (see DEFAULT_HANG_PAD).
     hang_y = (pelvis[1] + hang_pad) if "lower_body" in garment_id else (mid_sh[1] + hang_pad)
-    g[:, 1] += hang_y - g[:, 1].max()  # rest gövde y-YUKARI: üst kenar = max(y)
+    g[:, 1] += hang_y - g[:, 1].max()  # rest body is y-UP: top edge = max(y)
     return g
 
 
 def _get_binding(garment: GarmentAsset, body_model, hang_pad: float = DEFAULT_HANG_PAD,
                  scale: float = 1.0) -> "GarmentBinding":  # noqa: F821
-    """Giysi bağlamasını cache'ten yükler ya da rest gövdeye kurar ve cache'ler.
-    Cache anahtarı hang_pad VE scale'i İÇERİR — farklı askı/ölçek farklı bağlamadır
-    (eskiden cache yalnız +0.06'da açıktı; varsayılan değişince sessizce kapanırdı;
-    scale eklenmeseydi kalibrasyon taraması ilk ölçeğin cache'ini okurdu)."""
+    """Loads the garment binding from cache, or builds it on the rest body and caches it.
+    The cache key INCLUDES hang_pad AND scale — a different hang/scale is a different binding
+    (the cache used to only apply at +0.06; when the default changed it silently turned off;
+    without scale in the key a calibration sweep would read the first scale's cache)."""
     from meshvton2.conditioning.lbs_drape import GarmentBinding, bind_garment
 
     cache_path = None
@@ -299,7 +299,7 @@ def _get_binding(garment: GarmentAsset, body_model, hang_pad: float = DEFAULT_HA
         if cache_path.exists():
             try:
                 return GarmentBinding.load(cache_path)
-            except Exception:  # paralel işçi yarışında yarım yazılmış cache — yeniden kur
+            except Exception:  # half-written cache from a parallel worker race — rebuild
                 pass
     rest = body_model.rest()
     aligned = _prealign_garment(garment.verts, rest, garment.garment_id,
@@ -311,7 +311,7 @@ def _get_binding(garment: GarmentAsset, body_model, hang_pad: float = DEFAULT_HA
     return binding
 
 
-ATR_GARMENT_LABELS = (4, 7)  # upper_clothes, dress — parse'tan giysi silüeti (garment=None modu)
+ATR_GARMENT_LABELS = (4, 7)  # upper_clothes, dress — garment silhouette from the parse (garment=None mode)
 
 
 def _build_impl_real(
@@ -333,12 +333,12 @@ def _build_impl_real(
 
     if person_image is not None and person_prep is None:
         raise ValueError(
-            "Foto modunda person_prep zorunlu (PersonPreprocessor.process çıktısı) — "
-            "agnostic+mask oradan gelir; builder parser yüklemez."
+            "person_prep is required in photo mode (output of PersonPreprocessor.process) — "
+            "agnostic+mask come from there; the builder does not load a parser."
         )
     hgt, wdt = size
 
-    # 1) Gövde + kamera (azimuth tahmini YOK: foto kamerası pred_cam'den, diğerleri orbit)
+    # 1) Body + camera (NO azimuth estimation: the photo camera comes from pred_cam, the rest are orbits)
     body_model = get_body_model()
     body = body_model(smplx_params)
     cam0 = cam_mod.photo_camera(smplx_params, size)
@@ -347,31 +347,31 @@ def _build_impl_real(
     meta: dict[str, Any] = {"view": "photo" if isinstance(view, PhotoView) else f"orbit:{view.azim_deg}"}
 
     if garment is not None:
-        # 2) Drape: rest-binding (cache'li) -> pozlu gövdeye uygula -> clearance
+        # 2) Drape: rest binding (cached) -> apply to the posed body -> clearance
         binding = _get_binding(garment, body_model, hang_pad=hang_pad, scale=garment_scale)
         gverts = apply_binding(binding, body["verts"])
         gverts, clearance_ratio, pen_depth = push_clearance(gverts, body["verts"], body["faces"])
-        # Patlama dedektörü: drape edilmiş giysi gövdeden ne kadar büyük?
-        # (clearance bunu YAKALAYAMAZ — patlayan giysi gövdenin dışındadır;
-        # QA'da 3-4x boyutlu parçalanmış giysi görüldü, bu metrik onun kapısı)
+        # Explosion detector: how much bigger is the draped garment than the body?
+        # (clearance CANNOT catch this — an exploded garment is outside the body;
+        # QA showed a shattered garment 3-4x the size, this metric is its gate)
         diag = lambda v: float(np.linalg.norm(v.max(axis=0) - v.min(axis=0)))
         extent_ratio = diag(gverts) / max(diag(body["verts"]), 1e-8)
 
-        # 3) Ekran-uzayı geometri + görünüm referansı (mesh render'ı)
+        # 3) Screen-space geometry + appearance reference (mesh render)
         geo = render_geometry(body["verts"], body["faces"], gverts, garment.faces, cam, size=size)
         garment_sil = geo["garment_sil"].astype(np.float32)
-        # KALICI KURAL: sistem TEXTURESUZ çalışır — appearance ref HER ZAMAN düz
-        # gri kumaşlı ŞEKİLLİ render'dır (düz gri kart değil: giysinin formu modele
-        # geçer, renk/desen bilgisi asla geçmez), garment.texture var olsun ya da
-        # olmasın (bkz. proje kuralı: appearance sadakati hedef değil).
-        # use_texture=True YALNIZ eski texture'lı checkpoint için (bkz. sabit notu)
+        # PERMANENT RULE: the system runs TEXTURELESS — the appearance ref is ALWAYS a
+        # SHAPED render with flat grey cloth (not a flat grey card: the garment's form
+        # reaches the model, color/pattern information never does), whether or not
+        # garment.texture exists (see project rule: appearance fidelity is not a goal).
+        # use_texture=True is ONLY for the old textured checkpoint (see the constant's note)
         g_app = garment if use_texture else force_textureless(garment)
         appearance01 = render_appearance_ref(g_app, size=size).astype(np.float32) / 255.0
         meta.update(garment_id=garment.garment_id, clearance_ratio=clearance_ratio,
                     penetration_depth=pen_depth, drape_extent_ratio=extent_ratio)
     else:
-        # Gerçek-veri modu: gövde-only geometri; giysi silüeti PARSE'tan,
-        # görünüm referansı ürün fotoğrafından (süpervizyon tutarlılığı).
+        # Real-data mode: body-only geometry; the garment silhouette comes from the PARSE,
+        # the appearance reference from the product photo (supervision consistency).
         geo = render_geometry(body["verts"], body["faces"], None, None, cam, size=size)
         parse = np.asarray(person_prep.parse)
         parse = cv2.resize(parse, (wdt, hgt), interpolation=cv2.INTER_NEAREST)
@@ -382,14 +382,14 @@ def _build_impl_real(
 
     depth_sil01 = np.stack([geo["depth"], geo["depth"], garment_sil], axis=2)
 
-    # 4) Agnostic + maske
-    if person_image is None:  # sentetik mod: GT render'dan türet
+    # 4) Agnostic + mask
+    if person_image is None:  # synthetic mode: derive from the GT render
         skin = np.full((len(body["verts"]), 3), (0.80, 0.62, 0.52))
-        # GT giysi HER ZAMAN gri (appearance ref ile AYNI görünüm).
-        # 2026-08-09 teşhisi: GT texture'lıyken ref gri kalıyordu → aynı girdiye
-        # bazen desenli bazen gri hedef; desen girdiden ÖNGÖRÜLEMEZ olduğu için
-        # akış-eşleme kaybının optimumu koşullu ORTALAMA = solgun/yarı saydam leke.
-        # Görev ancak hedef de gri olunca öğrenilebilir hale gelir.
+        # The GT garment is ALWAYS grey (the SAME look as the appearance ref).
+        # 2026-08-09 diagnosis: with a textured GT the ref stayed grey → the same input
+        # sometimes got a patterned, sometimes a grey target; since the pattern is
+        # UNPREDICTABLE from the input, the flow-matching loss optimum is the conditional
+        # MEAN = a pale/semi-transparent smear. The task only becomes learnable once the target is grey too.
         gt = render_textured_scene(body["verts"], body["faces"], skin, gverts,
                                    g_app, cam, size=size)
         kernel = np.ones((wdt // 30, wdt // 30), np.uint8)
@@ -401,12 +401,12 @@ def _build_impl_real(
         agnostic = person_prep.agnostic
         mask_u8 = person_prep.mask
         if agnostic.shape[:2] != (hgt, wdt):
-            raise ValueError(f"person_prep boyutu {agnostic.shape[:2]} != hedef {(hgt, wdt)}")
+            raise ValueError(f"person_prep size {agnostic.shape[:2]} != target {(hgt, wdt)}")
         if garment is not None and geometry_mask:
-            # HİZALAMA DÜZELTMESİ: parse maskesi kişinin ESKİ giysisini işaretler;
-            # mesh silüeti ondan geniş/kaymış olabilir → model maskeye hapsolur,
-            # geometri dışarıda "hayalet" bırakır. Maske = parse ∪ dilate(sil)
-            # (sentetik eğitim maskesi de dilate(sil) — aynı rejim, bkz. yukarısı).
+            # ALIGNMENT FIX: the parse mask marks the person's OLD garment; the mesh
+            # silhouette may be wider/shifted → the model gets trapped inside the mask
+            # and leaves a "ghost" of the geometry outside. Mask = parse ∪ dilate(sil)
+            # (the synthetic training mask is dilate(sil) too — same regime, see above).
             from meshvton2.conditioning.person import apply_agnostic
 
             kernel = np.ones((wdt // 30, wdt // 30), np.uint8)
@@ -427,12 +427,12 @@ def _build_impl_real(
 
 
 # --------------------------------------------------------------------------- #
-# Stub implementasyonu (yalnız 3D bağımlılıksız test ortamı; bkz. assert_real_impl)
+# Stub implementation (only for the 3D-dependency-free test environment; see assert_real_impl)
 # --------------------------------------------------------------------------- #
 
 
 def _stable_seed(person_image, smplx_params, garment: GarmentAsset | None, view: ViewSpec, size, appearance_ref_image=None) -> int:
-    """Girdilerin tamamından deterministik tohum — parite testinin temeli."""
+    """Deterministic seed from all inputs — the basis of the parity test."""
     h = hashlib.sha256()
     h.update(b"none" if person_image is None else person_image.tobytes())
     for key in sorted(k for k in smplx_params if k in ("betas", "body_pose", "global_orient", "transl", "pred_cam", "bbox")):

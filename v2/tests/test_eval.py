@@ -1,4 +1,4 @@
-"""Metrik doğruluğu + harness uçtan uca sıhhati (Faz 0 çıkış kriteri)."""
+"""Metric correctness + end-to-end harness sanity (the Phase 0 exit criterion)."""
 
 import numpy as np
 import pytest
@@ -50,11 +50,11 @@ def test_silhouette_iou():
     assert M.silhouette_iou(a, a) == pytest.approx(1.0)
     b = np.zeros((10, 10), bool)
     assert M.silhouette_iou(a, b) == pytest.approx(0.0)
-    assert M.silhouette_iou(b, b) is None  # boş∪boş tanımsız — None, 0 değil
+    assert M.silhouette_iou(b, b) is None  # empty∪empty is undefined — None, not 0
 
 
 def test_empty_mask_returns_none_not_zero():
-    """v1 dersi: hesaplanamayan metrik 0.0 YALANI dönmez."""
+    """The v1 lesson: a metric that cannot be computed does not return the 0.0 LIE."""
     img = _img()
     empty = np.zeros((64, 48), bool)
     assert M.compute_ssim(img, img, mask=empty) is None
@@ -78,7 +78,7 @@ def test_manifest_roundtrip(tmp_path):
     m.save(tmp_path / "manifest.json")
     loaded = load_manifest(tmp_path / "manifest.json")
     assert [c for c in loaded.items()] == [c for c in m.items()]
-    assert len(list(loaded.items())) == 2  # 1 combo × 2 açı
+    assert len(list(loaded.items())) == 2  # 1 combo × 2 angles
 
 
 # --------------------------- harness --------------------------- #
@@ -93,7 +93,7 @@ def test_harness_end_to_end(tmp_path):
     person = _img(1)
     mask = np.zeros((64, 48), np.uint8)
     mask[20:40, 10:30] = 255
-    # 0°: tüm aux dosyalarıyla; 180°: kasıtlı eksik tahmin
+    # 0°: with all the aux files; 180°: a deliberately missing prediction
     stem = pred_dir / "p1_g1_000"
     Image.fromarray(pred).save(stem.with_suffix(".png"))
     Image.fromarray(person).save(f"{stem}.person.png")

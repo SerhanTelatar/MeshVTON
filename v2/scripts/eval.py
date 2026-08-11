@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """MeshVTON v2 eval CLI.
 
-Kullanım:
-  python v2/scripts/eval.py --pred-dir <dir>                 # golden manifest'e karşı
+Usage:
+  python v2/scripts/eval.py --pred-dir <dir>                 # against the golden manifest
   python v2/scripts/eval.py --pred-dir <dir> --name phase1_fill
-  python v2/scripts/eval.py --self-check <görüntü dizini>    # harness sıhhati: pred=gt → SSIM≈1
+  python v2/scripts/eval.py --self-check <image dir>         # harness sanity: pred=gt → SSIM≈1
 
-Faz 4+: --checkpoint / --disable-control bayrakları model entegrasyonuyla eklenecek.
+Phase 4+: the --checkpoint / --disable-control flags will arrive with the model integration.
 """
 
 from __future__ import annotations
@@ -27,11 +27,11 @@ from meshvton2.eval.golden_set import load_manifest  # noqa: E402
 
 
 def self_check(image_dir: Path, out_dir: Path) -> int:
-    """Her görüntüyü hem tahmin hem GT olarak eşler; SSIM≈1/PSNR=inf beklenir.
-    Harness'ın uçtan uca çalıştığını kanıtlar (Faz 0 çıkış kriteri)."""
+    """Pairs every image with itself as both prediction and GT; SSIM≈1/PSNR=inf is expected.
+    Proves the harness works end to end (the Phase 0 exit criterion)."""
     images = sorted(p for p in image_dir.iterdir() if p.suffix.lower() in {".png", ".jpg", ".jpeg"})
     if not images:
-        print(f"HATA: {image_dir} içinde görüntü yok", file=sys.stderr)
+        print(f"ERROR: no images inside {image_dir}", file=sys.stderr)
         return 1
     rows = []
     with tempfile.TemporaryDirectory() as tmp:
@@ -45,11 +45,11 @@ def self_check(image_dir: Path, out_dir: Path) -> int:
     summary = harness.summarize(rows)
     harness.write_report(summary, out_dir / "self_check.json")
     ssim = summary["overall"].get("gt_ssim", {}).get("mean")
-    print(f"self-check: {len(images)} görüntü, gt_ssim ortalama = {ssim}")
+    print(f"self-check: {len(images)} images, mean gt_ssim = {ssim}")
     if ssim is None or ssim < 0.999:
-        print("HATA: identity SSIM ≈ 1 bekleniyordu — harness bozuk", file=sys.stderr)
+        print("ERROR: identity SSIM ≈ 1 was expected — the harness is broken", file=sys.stderr)
         return 1
-    print(f"OK — rapor: {out_dir / 'self_check.json'}")
+    print(f"OK — report: {out_dir / 'self_check.json'}")
     return 0
 
 
@@ -61,10 +61,10 @@ def _to_png(src: Path, dst: Path) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--pred-dir", type=Path, help="Tahmin görüntüleri dizini")
-    ap.add_argument("--self-check", type=Path, help="Harness sıhhat testi için görüntü dizini")
+    ap.add_argument("--pred-dir", type=Path, help="Directory of prediction images")
+    ap.add_argument("--self-check", type=Path, help="Image directory for the harness sanity test")
     ap.add_argument("--manifest", type=Path, default=None)
-    ap.add_argument("--name", default="eval", help="Rapor dosya adı gövdesi")
+    ap.add_argument("--name", default="eval", help="Report file name stem")
     ap.add_argument("--out-dir", type=Path, default=None)
     args = ap.parse_args()
 
@@ -76,17 +76,17 @@ def main() -> int:
         return self_check(args.self_check, out_dir)
 
     if not args.pred_dir:
-        ap.error("--pred-dir veya --self-check gerekli")
+        ap.error("--pred-dir or --self-check is required")
     manifest_path = args.manifest or REPO / cfg["golden_manifest"]
     if not manifest_path.exists():
-        print(f"HATA: manifest yok: {manifest_path}\nÖnce: python v2/scripts/build_golden_set.py", file=sys.stderr)
+        print(f"ERROR: no manifest: {manifest_path}\nRun first: python v2/scripts/build_golden_set.py", file=sys.stderr)
         return 1
     manifest = load_manifest(manifest_path)
     summary = harness.evaluate(manifest, args.pred_dir, cfg["pred_pattern"])
     harness.write_report(summary, out_dir / f"{args.name}.json")
-    print(f"{summary['found']}/{summary['total']} tahmin değerlendirildi — rapor: {out_dir / f'{args.name}.json'} (+.md)")
+    print(f"{summary['found']}/{summary['total']} predictions evaluated — report: {out_dir / f'{args.name}.json'} (+.md)")
     if summary["missing"]:
-        print(f"Eksik {len(summary['missing'])} tahmin (ilk 5): {summary['missing'][:5]}")
+        print(f"Missing {len(summary['missing'])} predictions (first 5): {summary['missing'][:5]}")
     return 0
 
 

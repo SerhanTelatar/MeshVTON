@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""VAE latent ön-hesabı — eğitim adımından VAE'yi ve PNG çözmeyi çıkarır.
+"""VAE latent precompute — takes the VAE and PNG decoding out of the training step.
 
-Her eğitim öğesi için 5 görüntünün FLUX-VAE latent'i bir kez hesaplanıp
-{item_dir}/latents.pt olarak yazılır (bf16, CPU):
-    gt_lat, masked_lat (Fill sözleşmesi: maske içi SİYAH), normal_lat,
+For each training item the FLUX-VAE latents of 5 images are computed once and written as
+{item_dir}/latents.pt (bf16, CPU):
+    gt_lat, masked_lat (the Fill contract: BLACK inside the mask), normal_lat,
     depth_sil_lat, ref_lat
-Sonuç eğitimle BİREBİR aynıdır (aynı VAE, aynı ölçekleme) — saf hız kazancı.
-Resume-safe: mevcut latents.pt atlanır. A100'de ~10k öğe ≈ 20-30 dk.
+The result is IDENTICAL to training (same VAE, same scaling) — a pure speed gain.
+Resume-safe: an existing latents.pt is skipped. ~10k items ≈ 20-30 min on an A100.
 
-Kullanım: python v2/scripts/precompute_latents.py [--batch 8]
+Usage: python v2/scripts/precompute_latents.py [--batch 8]
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ KEYS = ("gt_lat", "masked_lat", "normal_lat", "depth_sil_lat", "ref_lat")
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--batch", type=int, default=8, help="öğe başına 5 görüntü; VAE batch = 5*bu")
+    ap.add_argument("--batch", type=int, default=8, help="5 images per item; VAE batch = 5*this")
     ap.add_argument("--repo", default=None)
     args = ap.parse_args()
 
@@ -46,7 +46,7 @@ def main() -> int:
         items += discover_synth_items(synth_root)
     if real_root.exists():
         items += discover_flat_items(real_root)
-    SLIM_LIMIT = 4 * 1024 * 1024  # sağlıklı latents.pt ~2MB; üstü = şişkin-storage bug'ı
+    SLIM_LIMIT = 4 * 1024 * 1024  # a healthy latents.pt is ~2MB; above that = the bloated-storage bug
 
     def _load(p: Path):
         try:
@@ -62,20 +62,20 @@ def main() -> int:
             todo.append(it)
             continue
         d = _load(p)
-        if d is None:  # yarım yazım (disk dolunca kesilen) — yeniden hesapla
-            print(f"BOZUK latent yeniden hesaplanacak: {p}")
+        if d is None:  # half-written (cut off when the disk filled) — recompute
+            print(f"BROKEN latent will be recomputed: {p}")
             p.unlink()
             todo.append(it)
         elif p.stat().st_size > SLIM_LIMIT:
-            # torch.save DİLİM kaydında altta yatan TÜM batch storage'ını yazıyordu
-            # (2MB'lık dosya 15.7MB) — clone'la incelt; içerik birebir aynı, GPU gerekmez
+            # torch.save was writing the ENTIRE underlying batch storage for a SLICE
+            # (a 2MB file became 15.7MB) — slim it with clone; identical content, no GPU needed
             torch.save({k: v.clone().contiguous() for k, v in d.items()}, p)
             slimmed += 1
             if slimmed % 1000 == 0:
-                print(f"inceltilen: {slimmed}", flush=True)
+                print(f"slimmed: {slimmed}", flush=True)
     if slimmed:
-        print(f"şişkin latent inceltildi: {slimmed} dosya (~{slimmed * 13.7 / 1024:.0f} GB geri kazanıldı)")
-    print(f"toplam öğe: {len(items)}, hesaplanacak: {len(todo)}")
+        print(f"bloated latents slimmed: {slimmed} files (~{slimmed * 13.7 / 1024:.0f} GB reclaimed)")
+    print(f"total items: {len(items)}, to compute: {len(todo)}")
     if not todo:
         return 0
 
@@ -102,12 +102,12 @@ def main() -> int:
         lats = encode(torch.stack(pixel_stack))
         for i, it in enumerate(metas):
             group = lats[i * 5 : (i + 1) * 5]
-            # clone ŞART: dilim kaydetmek altta yatan tüm batch storage'ını yazar (15.7MB/2MB şişkinliği)
+            # clone is REQUIRED: saving a slice writes the whole underlying batch storage (the 15.7MB/2MB bloat)
             torch.save({k: t.clone().contiguous() for k, t in zip(KEYS, group)}, it.item_dir / "latents.pt")
         done += len(chunk)
         if done % 400 < args.batch:
             print(f"[{done}/{len(todo)}]", flush=True)
-    print(f"bitti: {done} öğe için latent yazıldı")
+    print(f"finished: latents written for {done} items")
     return 0
 
 

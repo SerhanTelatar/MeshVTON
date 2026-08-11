@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""Tez figürlerini mevcut tahminlerden üretir — DİFÜZYON YOK, sadece dosya okur.
+"""Builds the thesis figures from the existing predictions — NO DIFFUSION, it only reads files.
 
-İki figür üretir:
+It produces two figures:
 
-1. `fig_<set>_persons.png` — satır = kişi, sütunlar = [kişi fotoğrafı, her giysinin çıktısı].
-   "Aynı kişi, farklı mesh" figürü; mesh özgüllüğünün görsel karşılığı.
+1. `fig_<set>_persons.png` — row = person, columns = [person photo, the output for each garment].
+   The "same person, different mesh" figure; the visual counterpart of mesh specificity.
 
-2. `fig_<set>_refs.png` — satır = kombo, sütunlar = [kişi, giysi referansı, çıktı].
-   Rapordaki Fig 4 düzeni. Referans `.ref.png` olarak eval sırasında zaten yazılıyor.
+2. `fig_<set>_refs.png` — row = combo, columns = [person, garment reference, output].
+   The Fig 4 layout from the report. The reference is already written as `.ref.png` during eval.
 
-`--sets A B` verilirse ikinci sütun grubunda iki koşu YAN YANA dizilir
-(ör. Temmuz texture'lı vs Ağustos dokusuz) — checkpoint karşılaştırma figürü.
+If `--sets A B` is given, the two runs are laid out SIDE BY SIDE in the second column group
+(e.g. the textured July run vs the textureless August one) — the checkpoint comparison figure.
 
-Kullanım:
+Usage:
   python v2/scripts/make_figures.py --sets ckpt_control_on_july
   python v2/scripts/make_figures.py --sets ckpt_control_on_july ckpt_control_on_aug
   [--limit-persons 5] [--thumb 220]
@@ -41,7 +41,7 @@ def load(p: Path, size: tuple[int, int]) -> np.ndarray | None:
 
 
 def label_strip(width: int, texts: list[str], cell: int, h: int = 26) -> Image.Image:
-    """Sütun başlıkları — figürün tek başına okunabilir olması için."""
+    """Column headers — so the figure can be read on its own."""
     im = Image.new("RGB", (width, h), "white")
     d = ImageDraw.Draw(im)
     for i, t in enumerate(texts):
@@ -51,7 +51,7 @@ def label_strip(width: int, texts: list[str], cell: int, h: int = 26) -> Image.I
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--sets", nargs="+", required=True, help="eval_results altındaki pred klasörleri")
+    ap.add_argument("--sets", nargs="+", required=True, help="pred folders under eval_results")
     ap.add_argument("--limit-persons", type=int, default=5)
     ap.add_argument("--thumb", type=int, default=220)
     ap.add_argument("--angle", type=int, default=0)
@@ -80,9 +80,9 @@ def main() -> int:
 
     missing = [s for s in args.sets if not (out_root / s / "preds").exists()]
     if missing:
-        raise SystemExit(f"HATA: pred klasörü yok: {missing}")
+        raise SystemExit(f"ERROR: no preds folder: {missing}")
 
-    # --- Figür 1: satır = kişi, sütunlar = kişi + giysiler (set başına blok) ---
+    # --- Figure 1: row = person, columns = person + garments (one block per set) ---
     gids = by_person[persons[0]]
     cols = 1 + len(gids) * len(args.sets)
     grid = Image.new("RGB", (TH * cols, hh * len(persons)), "white")
@@ -104,9 +104,9 @@ def main() -> int:
     f1.paste(grid, (0, 26))
     p1 = fig_dir / f"fig_persons__{'_vs_'.join(args.sets)}.png"
     f1.save(p1)
-    print(f"[1] {p1}  ({len(persons)} kişi × {len(gids)} giysi × {len(args.sets)} set)")
+    print(f"[1] {p1}  ({len(persons)} people × {len(gids)} garments × {len(args.sets)} sets)")
 
-    # --- Figür 2: satır = kombo, sütunlar = kişi | referans | çıktı(lar) ---
+    # --- Figure 2: row = combo, columns = person | reference | output(s) ---
     rows = [(pid, gid) for pid in persons[:3] for gid in gids]
     cols2 = 2 + len(args.sets)
     grid2 = Image.new("RGB", (TH * cols2, hh * len(rows)), "white")
@@ -128,9 +128,9 @@ def main() -> int:
     f2.paste(grid2, (0, 26))
     p2 = fig_dir / f"fig_refs__{'_vs_'.join(args.sets)}.png"
     f2.save(p2)
-    print(f"[2] {p2}  ({len(rows)} kombo)")
-    print("\nNOT: referans paneli ilk setten alınır; setler farklı rejimdeyse "
-          "(texture'lı vs gri) bunu figür açıklamasında belirtin.")
+    print(f"[2] {p2}  ({len(rows)} combos)")
+    print("\nNOTE: the reference panel is taken from the first set; if the sets are in different "
+          "regimes (textured vs grey), state that in the figure caption.")
     return 0
 
 
