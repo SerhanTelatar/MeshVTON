@@ -61,6 +61,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--checkpoint", required=True)
     ap.add_argument("--idm-repo", type=Path, required=True)
+    ap.add_argument("--test-root", type=Path, default=None,
+                    help="VITON-HD test dir holding image/ and cloth/; auto-detected if omitted")
     ap.add_argument("--limit", type=int, default=500, help="0 = the whole test split (2032 pairs)")
     ap.add_argument("--metric-size", type=int, nargs=2, default=[512, 384], metavar=("H", "W"))
     ap.add_argument("--steps", type=int, default=28)
@@ -73,10 +75,29 @@ def main() -> int:
     size = (base["resolution"]["height"], base["resolution"]["width"])
     msize = tuple(args.metric_size)
 
-    test_root = REPO / base["paths"]["vitonhd_root"] / "test"
+    # The download unpacks under different names depending on the source (the archive is called
+    # zalando-hd-resized; base.yaml declares v2/data/vitonhd). Try the known layouts in order.
+    candidates = [args.test_root] if args.test_root else [
+        REPO / "data/zalando-hd-resized/test",       # build_golden_set.py uses this one
+        REPO / base["paths"]["vitonhd_root"] / "test",
+        REPO / "data/vitonhd/test",
+        REPO / "data/raw/test",
+    ]
+    test_root = next((c for c in candidates
+                      if c and (c / "image").is_dir() and (c / "cloth").is_dir()), None)
+    if test_root is None:
+        print("ERROR: no VITON-HD test split with both image/ and cloth/. Tried:", file=sys.stderr)
+        for c in candidates:
+            if not c:
+                continue
+            print(f"  {c}  image={'y' if (c/'image').is_dir() else 'n'} "
+                  f"cloth={'y' if (c/'cloth').is_dir() else 'n'}", file=sys.stderr)
+        print("\nLocate it and pass --test-root, e.g.:\n"
+              "  find /content /content/drive -maxdepth 6 -type d -name cloth 2>/dev/null",
+              file=sys.stderr)
+        return 2
     img_dir, cloth_dir = test_root / "image", test_root / "cloth"
-    if not img_dir.is_dir() or not cloth_dir.is_dir():
-        raise SystemExit(f"ERROR: VITON-HD test split not found: {img_dir} / {cloth_dir}")
+    print(f"VITON-HD test split: {test_root}")
 
     # PAIRED setting: person and product photo share the file name. This is the reconstruction
     # test the published SSIM/LPIPS numbers are computed on -- do NOT use test_pairs.txt here,
