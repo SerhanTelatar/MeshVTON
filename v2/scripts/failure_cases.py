@@ -101,10 +101,20 @@ def main() -> int:
     if not picks:
         raise SystemExit("ERROR: no failure mode could be built")
 
-    # ---- lay out: one block per mode, rows = cases, columns = person | reference | output ----
-    HEAD, LABEL = 26, 22
+    # The golden-set person photographs are gitignored, so on a fresh machine they may be absent.
+    # A blank column looks like a broken figure, so drop it rather than drawing grey boxes.
+    all_cases = [r for _, _, cs in picks for r in cs]
+    person_ok = any((p := by_pid.get(r["person"])) is not None
+                    and (manifest.root / p.image).exists() for r in all_cases)
+    cols = (["person"] if person_ok else []) + ["reference", "output"]
+    if not person_ok:
+        print("NOTE: golden-set person photographs not found — the input column is omitted "
+              "(the output column already shows the person).", file=sys.stderr)
+
+    # ---- lay out: one block per mode, rows = cases, columns as above ----
+    HEAD, LABEL, FOOT = 26, 22, 20
     block_h = HEAD + args.top * (hh + LABEL)
-    im = Image.new("RGB", (TH * 3, block_h * len(picks)), "white")
+    im = Image.new("RGB", (TH * len(cols), block_h * len(picks) + FOOT), "white")
     d = ImageDraw.Draw(im)
 
     for b, (key, title, cases) in enumerate(picks):
@@ -115,11 +125,11 @@ def main() -> int:
             y = y0 + HEAD + i * (hh + LABEL)
             pid, gid = r["person"], r["garment"]
             person = by_pid.get(pid)
-            for c, img in enumerate((
-                load(manifest.root / person.image, sz) if person else None,
-                load(Path(f"{stem(pid, gid)}.ref.png"), sz),
-                load(Path(f"{stem(pid, gid)}.png"), sz),
-            )):
+            panels = [load(Path(f"{stem(pid, gid)}.ref.png"), sz),
+                      load(Path(f"{stem(pid, gid)}.png"), sz)]
+            if person_ok:
+                panels.insert(0, load(manifest.root / person.image, sz) if person else None)
+            for c, img in enumerate(panels):
                 if img is not None:
                     im.paste(img, (c * TH, y))
                 else:
@@ -127,10 +137,8 @@ def main() -> int:
             metric = MODES[key][0]
             d.text((4, y + hh + 4),
                    f"{pid} x {gid.split('__')[-1]}   {metric}={r[metric]:.2f}", fill="black")
-        d.text((6, y0 + HEAD - 20), "", fill="black")
 
-    d.text((4, im.height - 16), "columns: input person | garment reference | MeshVTON output",
-           fill="black")
+    d.text((4, im.height - FOOT + 4), "columns: " + " | ".join(cols), fill="black")
     out = fig_dir / f"fig_failures__{pred_set}.png"
     im.save(out)
     print(f"\n{out}")
