@@ -84,23 +84,33 @@ def main() -> int:
     if missing:
         raise SystemExit(f"ERROR: no preds folder: {missing}")
 
+    # The golden-set photographs are gitignored, so they may be absent on a fresh machine.
+    # A blank first column reads as a broken figure, so drop the column instead.
+    person_ok = any((manifest.root / by_pid[p].image).exists() for p in persons if p in by_pid)
+    if not person_ok:
+        print(f"NOTE: no golden-set person photograph under {manifest.root} — the person "
+              f"column is omitted from both figures.", file=sys.stderr)
+
     # --- Figure 1: row = person, columns = person + garments (one block per set) ---
     gids = by_person[persons[0]]
-    cols = 1 + len(gids) * len(args.sets)
+    off = 1 if person_ok else 0
+    cols = off + len(gids) * len(args.sets)
     grid = Image.new("RGB", (TH * cols, hh * len(persons)), "white")
     for r, pid in enumerate(persons):
-        person_img = load(manifest.root / by_pid[pid].image, sz)
-        if person_img is not None:
-            grid.paste(Image.fromarray(person_img), (0, r * hh))
-        c = 1
+        if person_ok:
+            person_img = load(manifest.root / by_pid[pid].image, sz)
+            if person_img is not None:
+                grid.paste(Image.fromarray(person_img), (0, r * hh))
+        c = off
         for s in args.sets:
             for gid in gids:
                 a = load(Path(f"{stem(s, pid, gid)}.png"), sz)
                 if a is not None:
                     grid.paste(Image.fromarray(a), (c * TH, r * hh))
                 c += 1
-    heads = ["person"] + [f"{s.replace('ckpt_control_on', '')}|{g.split('__')[-1]}"
-                          for s in args.sets for g in gids]
+    heads = (["person"] if person_ok else []) + [
+        f"{s.replace('ckpt_control_on', '')}|{g.split('__')[-1]}"
+        for s in args.sets for g in gids]
     f1 = Image.new("RGB", (grid.width, grid.height + 26), "white")
     f1.paste(label_strip(grid.width, heads, TH), (0, 0))
     f1.paste(grid, (0, 26))
@@ -112,21 +122,22 @@ def main() -> int:
     # One combo per person first, so the rows show DIFFERENT people rather than one person
     # repeated with every garment — and cap the count, a 15-row figure does not fit a column.
     rows = [(pid, gids[i % len(gids)]) for i, pid in enumerate(persons)][: args.limit_combos]
-    cols2 = 2 + len(args.sets)
+    cols2 = off + 1 + len(args.sets)
     grid2 = Image.new("RGB", (TH * cols2, hh * len(rows)), "white")
     for r, (pid, gid) in enumerate(rows):
-        person_img = load(manifest.root / by_pid[pid].image, sz)
-        if person_img is not None:
-            grid2.paste(Image.fromarray(person_img), (0, r * hh))
+        if person_ok:
+            person_img = load(manifest.root / by_pid[pid].image, sz)
+            if person_img is not None:
+                grid2.paste(Image.fromarray(person_img), (0, r * hh))
         ref = load(Path(f"{stem(args.sets[0], pid, gid)}.ref.png"), sz)
         if ref is not None:
-            grid2.paste(Image.fromarray(ref), (TH, r * hh))
+            grid2.paste(Image.fromarray(ref), (off * TH, r * hh))
         for i, s in enumerate(args.sets):
             a = load(Path(f"{stem(s, pid, gid)}.png"), sz)
             if a is not None:
-                grid2.paste(Image.fromarray(a), ((2 + i) * TH, r * hh))
-    heads2 = ["person", "garment reference"] + [s.replace("ckpt_control_on", "output")
-                                                for s in args.sets]
+                grid2.paste(Image.fromarray(a), ((off + 1 + i) * TH, r * hh))
+    heads2 = (["person"] if person_ok else []) + ["garment reference"] + [
+        s.replace("ckpt_control_on", "output") for s in args.sets]
     f2 = Image.new("RGB", (grid2.width, grid2.height + 26), "white")
     f2.paste(label_strip(grid2.width, heads2, TH), (0, 0))
     f2.paste(grid2, (0, 26))
