@@ -53,6 +53,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--sets", nargs="+", required=True, help="pred folders under eval_results")
     ap.add_argument("--limit-persons", type=int, default=5)
+    ap.add_argument("--limit-combos", type=int, default=4,
+                    help="rows in figure 2; the default keeps it short enough for one column")
     ap.add_argument("--thumb", type=int, default=220)
     ap.add_argument("--angle", type=int, default=0)
     args = ap.parse_args()
@@ -107,7 +109,9 @@ def main() -> int:
     print(f"[1] {p1}  ({len(persons)} people × {len(gids)} garments × {len(args.sets)} sets)")
 
     # --- Figure 2: row = combo, columns = person | reference | output(s) ---
-    rows = [(pid, gid) for pid in persons[:3] for gid in gids]
+    # One combo per person first, so the rows show DIFFERENT people rather than one person
+    # repeated with every garment — and cap the count, a 15-row figure does not fit a column.
+    rows = [(pid, gids[i % len(gids)]) for i, pid in enumerate(persons)][: args.limit_combos]
     cols2 = 2 + len(args.sets)
     grid2 = Image.new("RGB", (TH * cols2, hh * len(rows)), "white")
     for r, (pid, gid) in enumerate(rows):
