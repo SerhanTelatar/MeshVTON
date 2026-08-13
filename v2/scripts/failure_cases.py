@@ -103,21 +103,30 @@ def main() -> int:
     if not picks:
         raise SystemExit("ERROR: no failure mode could be built")
 
-    # The golden-set person photographs are gitignored, so on a fresh machine they may be absent.
-    # A blank column looks like a broken figure, so drop it rather than drawing grey boxes.
+    # The person photo comes from the `.person.png` written next to every prediction, NOT from
+    # the golden manifest: eval writes it (harness.py::_aux_paths) and it is exactly the image
+    # that prediction was produced from, whereas v2/data/golden/ is gitignored and is often
+    # absent on a machine that only has the restored eval_results.
+    def person_path(pid: str, gid: str) -> Path | None:
+        p = Path(f"{stem(pid, gid)}.person.png")
+        if p.exists():
+            return p
+        g = by_pid.get(pid)
+        q = (manifest.root / g.image) if g else None
+        return q if q is not None and q.exists() else None
+
     all_cases = [r for _, _, cs in picks for r in cs]
-    person_ok = any((p := by_pid.get(r["person"])) is not None
-                    and (manifest.root / p.image).exists() for r in all_cases)
+    person_ok = any(person_path(r["person"], r["garment"]) for r in all_cases)
     cols = (["person"] if person_ok else []) + ["reference", "output"]
     if not person_ok:
-        print("NOTE: golden-set person photographs not found — the input column is omitted "
-              "(the output column already shows the person).", file=sys.stderr)
+        print("NOTE: neither the .person.png aux files nor the golden-set photographs were "
+              "found — the input column is omitted.", file=sys.stderr)
 
     def panels_for(pid: str, gid: str) -> list[Image.Image | None]:
         out = [load(Path(f"{stem(pid, gid)}.ref.png"), sz), load(Path(f"{stem(pid, gid)}.png"), sz)]
         if person_ok:
-            person = by_pid.get(pid)
-            out.insert(0, load(manifest.root / person.image, sz) if person else None)
+            pp = person_path(pid, gid)
+            out.insert(0, load(pp, sz) if pp else None)
         return out
 
     def put(d: ImageDraw.ImageDraw, im: Image.Image, img: Image.Image | None, x: int, y: int):
