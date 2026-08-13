@@ -84,12 +84,21 @@ def main() -> int:
     if missing:
         raise SystemExit(f"ERROR: no preds folder: {missing}")
 
-    # The golden-set photographs are gitignored, so they may be absent on a fresh machine.
-    # A blank first column reads as a broken figure, so drop the column instead.
-    person_ok = any((manifest.root / by_pid[p].image).exists() for p in persons if p in by_pid)
+    # Prefer the `.person.png` written next to every prediction (harness.py::_aux_paths): it is
+    # exactly the image that prediction came from, and it survives on a machine that only has the
+    # restored eval_results, whereas v2/data/golden/ is gitignored and often absent.
+    def person_path(pid: str, gid: str) -> Path | None:
+        p = Path(f"{stem(args.sets[0], pid, gid)}.person.png")
+        if p.exists():
+            return p
+        g = by_pid.get(pid)
+        q = (manifest.root / g.image) if g else None
+        return q if q is not None and q.exists() else None
+
+    person_ok = any(person_path(p, by_person[p][0]) for p in persons)
     if not person_ok:
-        print(f"NOTE: no golden-set person photograph under {manifest.root} — the person "
-              f"column is omitted from both figures.", file=sys.stderr)
+        print("NOTE: neither the .person.png aux files nor the golden-set photographs were "
+              "found — the person column is omitted from both figures.", file=sys.stderr)
 
     # --- Figure 1: row = person, columns = person + garments (one block per set) ---
     gids = by_person[persons[0]]
@@ -98,7 +107,8 @@ def main() -> int:
     grid = Image.new("RGB", (TH * cols, hh * len(persons)), "white")
     for r, pid in enumerate(persons):
         if person_ok:
-            person_img = load(manifest.root / by_pid[pid].image, sz)
+            pp = person_path(pid, gids[0])
+            person_img = load(pp, sz) if pp else None
             if person_img is not None:
                 grid.paste(Image.fromarray(person_img), (0, r * hh))
         c = off
@@ -126,7 +136,8 @@ def main() -> int:
     grid2 = Image.new("RGB", (TH * cols2, hh * len(rows)), "white")
     for r, (pid, gid) in enumerate(rows):
         if person_ok:
-            person_img = load(manifest.root / by_pid[pid].image, sz)
+            pp = person_path(pid, gid)
+            person_img = load(pp, sz) if pp else None
             if person_img is not None:
                 grid2.paste(Image.fromarray(person_img), (0, r * hh))
         ref = load(Path(f"{stem(args.sets[0], pid, gid)}.ref.png"), sz)
