@@ -179,15 +179,20 @@ def main() -> int:
     print(f"report: {report}")
     print("\nCONFIGURATION NOTE: this row is the model WITHOUT mesh conditioning "
           "(no photograph exists of these people wearing a CLOTH3D mesh). Label it as such.")
+    # FID: use pytorch-fid, NOT clean-fid. The comparison table reports FID following
+    # Seitzer 2020 (= pytorch-fid); clean-fid deliberately changes the resizing and returns
+    # values that are several points apart, which would not be comparable. Both image sets
+    # must also be at the metric resolution, so fid_sets.py writes resized copies first.
     if len(ssim_v) < 2000:
-        print(f"\nFID: NOT computed -- {len(ssim_v)} samples is too few for a stable value.")
-        print("     Run the full split (--limit 0), then:")
-        print(f"       pip install clean-fid && python -c \"from cleanfid import fid; "
-              f"print(fid.compute_fid('{out_dir / 'preds'}', '{img_dir}'))\"")
+        print(f"\nFID: NOT computed -- {len(ssim_v)} samples is too few for a stable value "
+              "(published FID is computed on all 2032 test pairs).")
+        print("     Generate the rest first (resume-safe, only the missing pairs are sampled):")
+        print(f"       python v2/scripts/eval_vitonhd_protocol.py --checkpoint <ckpt> "
+              f"--idm-repo <idm> --limit 0")
     else:
-        print(f"\nFID: sample count is sufficient. Run:")
-        print(f"  python -c \"from cleanfid import fid; "
-              f"print(fid.compute_fid('{out_dir / 'preds'}', '{img_dir}'))\"")
+        print("\nFID: sample count is sufficient. Run:")
+        print(f"  python v2/scripts/fid_vitonhd.py --pred-dir {out_dir / 'preds'} "
+              f"--real-dir {img_dir} --size {msize[0]} {msize[1]}")
     return 0
 
 
