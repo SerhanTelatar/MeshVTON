@@ -55,6 +55,8 @@ def main() -> int:
     ap.add_argument("--set", dest="pred_set", default=None,
                     help="preds folder under eval_results; default: the report file name")
     ap.add_argument("--top", type=int, default=4, help="worst N cases per failure mode")
+    ap.add_argument("--layout", choices=("tall", "wide"), default="wide",
+                    help="wide = cases side by side (use \\begin{figure*}); tall = one per row")
     ap.add_argument("--thumb", type=int, default=220)
     ap.add_argument("--angle", type=int, default=0)
     args = ap.parse_args()
@@ -111,34 +113,62 @@ def main() -> int:
         print("NOTE: golden-set person photographs not found — the input column is omitted "
               "(the output column already shows the person).", file=sys.stderr)
 
-    # ---- lay out: one block per mode, rows = cases, columns as above ----
-    HEAD, LABEL, FOOT = 26, 22, 20
-    block_h = HEAD + args.top * (hh + LABEL)
-    im = Image.new("RGB", (TH * len(cols), block_h * len(picks) + FOOT), "white")
-    d = ImageDraw.Draw(im)
-
-    for b, (key, title, cases) in enumerate(picks):
-        y0 = b * block_h
-        d.rectangle([0, y0, im.width, y0 + HEAD - 2], fill=(240, 240, 240))
-        d.text((6, y0 + 7), f"{key}: {title}", fill="black")
-        for i, r in enumerate(cases):
-            y = y0 + HEAD + i * (hh + LABEL)
-            pid, gid = r["person"], r["garment"]
+    def panels_for(pid: str, gid: str) -> list[Image.Image | None]:
+        out = [load(Path(f"{stem(pid, gid)}.ref.png"), sz), load(Path(f"{stem(pid, gid)}.png"), sz)]
+        if person_ok:
             person = by_pid.get(pid)
-            panels = [load(Path(f"{stem(pid, gid)}.ref.png"), sz),
-                      load(Path(f"{stem(pid, gid)}.png"), sz)]
-            if person_ok:
-                panels.insert(0, load(manifest.root / person.image, sz) if person else None)
-            for c, img in enumerate(panels):
-                if img is not None:
-                    im.paste(img, (c * TH, y))
-                else:
-                    d.rectangle([c * TH, y, (c + 1) * TH - 2, y + hh - 2], fill=(235, 235, 235))
-            metric = MODES[key][0]
-            d.text((4, y + hh + 4),
-                   f"{pid} x {gid.split('__')[-1]}   {metric}={r[metric]:.2f}", fill="black")
+            out.insert(0, load(manifest.root / person.image, sz) if person else None)
+        return out
 
-    d.text((4, im.height - FOOT + 4), "columns: " + " | ".join(cols), fill="black")
+    def put(d: ImageDraw.ImageDraw, im: Image.Image, img: Image.Image | None, x: int, y: int):
+        if img is not None:
+            im.paste(img, (x, y))
+        else:
+            d.rectangle([x, y, x + TH - 2, y + hh - 2], fill=(235, 235, 235))
+
+    HEAD, LABEL, FOOT = 26, 22, 20
+    NC = len(cols)
+
+    if args.layout == "wide":
+        # Cases run ACROSS, each case occupying NC panels. One row per failure mode, so the
+        # figure is short and wide -- the shape a two-column \begin{figure*} wants.
+        block_h = HEAD + hh + LABEL
+        im = Image.new("RGB", (TH * NC * args.top, block_h * len(picks) + FOOT), "white")
+        d = ImageDraw.Draw(im)
+        for b, (key, title, cases) in enumerate(picks):
+            y0 = b * block_h
+            d.rectangle([0, y0, im.width, y0 + HEAD - 2], fill=(240, 240, 240))
+            d.text((6, y0 + 7), f"{key}: {title}", fill="black")
+            for i, r in enumerate(cases):
+                x0 = i * TH * NC
+                for c, img in enumerate(panels_for(r["person"], r["garment"])):
+                    put(d, im, img, x0 + c * TH, y0 + HEAD)
+                metric = MODES[key][0]
+                d.text((x0 + 4, y0 + HEAD + hh + 4),
+                       f"{r['person']} x {r['garment'].split('__')[-1]}  "
+                       f"{metric}={r[metric]:.2f}", fill="black")
+                if i:  # separator between cases
+                    d.line([x0, y0 + HEAD, x0, y0 + HEAD + hh], fill=(200, 200, 200), width=2)
+    else:
+        block_h = HEAD + args.top * (hh + LABEL)
+        im = Image.new("RGB", (TH * NC, block_h * len(picks) + FOOT), "white")
+        d = ImageDraw.Draw(im)
+        for b, (key, title, cases) in enumerate(picks):
+            y0 = b * block_h
+            d.rectangle([0, y0, im.width, y0 + HEAD - 2], fill=(240, 240, 240))
+            d.text((6, y0 + 7), f"{key}: {title}", fill="black")
+            for i, r in enumerate(cases):
+                y = y0 + HEAD + i * (hh + LABEL)
+                for c, img in enumerate(panels_for(r["person"], r["garment"])):
+                    put(d, im, img, c * TH, y)
+                metric = MODES[key][0]
+                d.text((4, y + hh + 4),
+                       f"{r['person']} x {r['garment'].split('__')[-1]}  "
+                       f"{metric}={r[metric]:.2f}", fill="black")
+
+    d.text((4, im.height - FOOT + 4),
+           f"each case: {' | '.join(cols)}" if args.layout == "wide"
+           else "columns: " + " | ".join(cols), fill="black")
     out = fig_dir / f"fig_failures__{pred_set}.png"
     im.save(out)
     print(f"\n{out}")
