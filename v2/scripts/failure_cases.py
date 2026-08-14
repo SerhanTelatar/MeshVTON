@@ -55,8 +55,9 @@ def main() -> int:
     ap.add_argument("--set", dest="pred_set", default=None,
                     help="preds folder under eval_results; default: the report file name")
     ap.add_argument("--top", type=int, default=4, help="worst N cases per failure mode")
-    ap.add_argument("--layout", choices=("tall", "wide"), default="wide",
-                    help="wide = cases side by side (use \\begin{figure*}); tall = one per row")
+    ap.add_argument("--per-row", type=int, default=2,
+                    help="cases per row inside a block: 4 = wide (\\begin{figure*}), "
+                         "2 = roughly square, 1 = tall single column")
     ap.add_argument("--thumb", type=int, default=220)
     ap.add_argument("--angle", type=int, default=0)
     args = ap.parse_args()
@@ -135,49 +136,34 @@ def main() -> int:
         else:
             d.rectangle([x, y, x + TH - 2, y + hh - 2], fill=(235, 235, 235))
 
+    # One block per failure mode; inside a block the cases are tiled --per-row across, so the
+    # aspect ratio is chosen by the caller: 4 = short and wide (\begin{figure*}), 2 = roughly
+    # square, 1 = one case per row (tall, single column).
     HEAD, LABEL, FOOT = 26, 22, 20
     NC = len(cols)
+    PR = max(1, min(args.per_row, args.top))
+    case_rows = -(-args.top // PR)  # ceil
+    block_h = HEAD + case_rows * (hh + LABEL)
 
-    if args.layout == "wide":
-        # Cases run ACROSS, each case occupying NC panels. One row per failure mode, so the
-        # figure is short and wide -- the shape a two-column \begin{figure*} wants.
-        block_h = HEAD + hh + LABEL
-        im = Image.new("RGB", (TH * NC * args.top, block_h * len(picks) + FOOT), "white")
-        d = ImageDraw.Draw(im)
-        for b, (key, title, cases) in enumerate(picks):
-            y0 = b * block_h
-            d.rectangle([0, y0, im.width, y0 + HEAD - 2], fill=(240, 240, 240))
-            d.text((6, y0 + 7), f"{key}: {title}", fill="black")
-            for i, r in enumerate(cases):
-                x0 = i * TH * NC
-                for c, img in enumerate(panels_for(r["person"], r["garment"])):
-                    put(d, im, img, x0 + c * TH, y0 + HEAD)
-                metric = MODES[key][0]
-                d.text((x0 + 4, y0 + HEAD + hh + 4),
-                       f"{r['person']} x {r['garment'].split('__')[-1]}  "
-                       f"{metric}={r[metric]:.2f}", fill="black")
-                if i:  # separator between cases
-                    d.line([x0, y0 + HEAD, x0, y0 + HEAD + hh], fill=(200, 200, 200), width=2)
-    else:
-        block_h = HEAD + args.top * (hh + LABEL)
-        im = Image.new("RGB", (TH * NC, block_h * len(picks) + FOOT), "white")
-        d = ImageDraw.Draw(im)
-        for b, (key, title, cases) in enumerate(picks):
-            y0 = b * block_h
-            d.rectangle([0, y0, im.width, y0 + HEAD - 2], fill=(240, 240, 240))
-            d.text((6, y0 + 7), f"{key}: {title}", fill="black")
-            for i, r in enumerate(cases):
-                y = y0 + HEAD + i * (hh + LABEL)
-                for c, img in enumerate(panels_for(r["person"], r["garment"])):
-                    put(d, im, img, c * TH, y)
-                metric = MODES[key][0]
-                d.text((4, y + hh + 4),
-                       f"{r['person']} x {r['garment'].split('__')[-1]}  "
-                       f"{metric}={r[metric]:.2f}", fill="black")
+    im = Image.new("RGB", (TH * NC * PR, block_h * len(picks) + FOOT), "white")
+    d = ImageDraw.Draw(im)
+    for b, (key, title, cases) in enumerate(picks):
+        y0 = b * block_h
+        d.rectangle([0, y0, im.width, y0 + HEAD - 2], fill=(240, 240, 240))
+        d.text((6, y0 + 7), f"{key}: {title}", fill="black")
+        for i, r in enumerate(cases):
+            x0 = (i % PR) * TH * NC
+            y = y0 + HEAD + (i // PR) * (hh + LABEL)
+            for c, img in enumerate(panels_for(r["person"], r["garment"])):
+                put(d, im, img, x0 + c * TH, y)
+            metric = MODES[key][0]
+            d.text((x0 + 4, y + hh + 4),
+                   f"{r['person']} x {r['garment'].split('__')[-1]}  "
+                   f"{metric}={r[metric]:.2f}", fill="black")
+            if i % PR:  # separator between cases on the same row
+                d.line([x0, y, x0, y + hh], fill=(200, 200, 200), width=2)
 
-    d.text((4, im.height - FOOT + 4),
-           f"each case: {' | '.join(cols)}" if args.layout == "wide"
-           else "columns: " + " | ".join(cols), fill="black")
+    d.text((4, im.height - FOOT + 4), f"each case: {' | '.join(cols)}", fill="black")
     out = fig_dir / f"fig_failures__{pred_set}.png"
     im.save(out)
     print(f"\n{out}")
