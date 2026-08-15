@@ -22,6 +22,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "v2"))
 
+import cv2  # noqa: E402
 import numpy as np  # noqa: E402
 import yaml  # noqa: E402
 from PIL import Image, ImageDraw  # noqa: E402
@@ -43,6 +44,8 @@ HEADS = ["input photograph", "agnostic", "inpainting mask",
 # a regression failure.
 CAMERA_VERIFIED = ("00000_00", "02935_00", "01455_00", "00737_00", "02199_00")
 
+ATR_GARMENT = (4, 7)  # upper-body labels in the parser, as used by calibrate_hang.py
+
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
@@ -53,6 +56,10 @@ def main() -> int:
                     help="one garment per row; a single value is reused for every row. "
                          "Default: a different qualifying garment per row, so the appearance "
                          "column carries information instead of repeating")
+    ap.add_argument("--rank", type=int, default=0, metavar="N",
+                    help="score every person x garment combination by mesh-parser silhouette IoU "
+                         "(the measure the calibration uses) and draw the best N as rows. "
+                         "Selection is then by measurement rather than by eye")
     ap.add_argument("--thumb", type=int, default=220)
     ap.add_argument("--use-texture", action="store_true",
                     help="render the appearance reference WITH its texture. Match whatever the "
@@ -120,36 +127,72 @@ def main() -> int:
               f"geometry; the silhouette panel will show the body only.", file=sys.stderr)
         chosen = [("(body only)", None)]
 
-    # One garment per row, cycling if fewer garments than persons.
-    per_row = [chosen[i % len(chosen)] for i in range(len(pids))]
-    for pid, (gid, _) in zip(pids, per_row):
-        print(f"row: {pid} x {gid}")
-
     prep = PersonPreprocessor(args.idm_repo)
     hmr2 = build_hmr2_backend()
+
+    # Person preprocessing and the body regression depend only on the photograph, so they are
+    # done once per person and reused across every garment.
+    people: dict[str, tuple] = {}
+
+    def prepare(pid: str):
+        if pid not in people:
+            pp = prep.process(manifest.root / by_pid[pid].image, size=size)
+            worn = np.isin(cv2.resize(np.asarray(pp.parse), (size[1], size[0]),
+                                      interpolation=cv2.INTER_NEAREST), ATR_GARMENT)
+            people[pid] = (pp, hmr2(pp.image, bbox=person_square_bbox(pp)), worn)
+        return people[pid]
+
+    def build(pid: str, asset):
+        pp, params, _ = prepare(pid)
+        kw = dict(size=size, person_prep=pp, use_texture=args.use_texture)
+        if asset is not None:
+            kw.update(hang_pad=PHOTO_HANG_PAD, garment_scale=PHOTO_GARMENT_SCALE)
+        return build_conditioning(pp.image, params, asset, PhotoView(), **kw)
+
+    if args.rank:
+        # Score every combination the way the calibration does: IoU between the rendered garment
+        # silhouette and the garment region the parser finds on the photograph. That reference is
+        # independent of the diffusion model, so the ranking measures conditioning quality rather
+        # than output quality, and the rows are chosen by measurement rather than by eye.
+        cand_pids = args.persons or [p.id for p in manifest.persons]
+        scored = []
+        for pid in cand_pids:
+            if pid not in by_pid:
+                continue
+            _, _, worn = prepare(pid)
+            for gid, asset in chosen:
+                sil = build(pid, asset).control_depth_sil[2].numpy() > 0
+                union = (sil | worn).sum()
+                scored.append((float((sil & worn).sum() / union) if union else 0.0, pid, gid, asset))
+        scored.sort(reverse=True, key=lambda r: r[0])
+        print("\ntop combinations by mesh-parser IoU:")
+        for iou, pid, gid, _ in scored[: args.rank]:
+            print(f"  {iou:.3f}  {pid} x {gid}")
+        plan = [(pid, (gid, asset)) for _, pid, gid, asset in scored[: args.rank]]
+    else:
+        # One garment per row, cycling if fewer garments than persons.
+        plan = list(zip(pids, [chosen[i % len(chosen)] for i in range(len(pids))]))
+        for pid, (gid, _) in plan:
+            print(f"row: {pid} x {gid}")
 
     TH = args.thumb
     hh = round(TH * size[0] / size[1])
     HEAD = 24
     rows = []
 
-    for pid, (gid, asset) in zip(pids, per_row):
+    for pid, (gid, asset) in plan:
         if pid not in by_pid:
             print(f"SKIP {pid}: not in the manifest", file=sys.stderr)
             continue
-        pp = prep.process(manifest.root / by_pid[pid].image, size=size)
-        params = hmr2(pp.image, bbox=person_square_bbox(pp))
-        kw = dict(size=size, person_prep=pp, use_texture=args.use_texture)
-        if asset is not None:
-            kw.update(hang_pad=PHOTO_HANG_PAD, garment_scale=PHOTO_GARMENT_SCALE)
-        b = build_conditioning(pp.image, params, asset, PhotoView(), **kw)
+        pp, _, _ = prepare(pid)
+        b = build(pid, asset)
 
         mask = Image.fromarray((b.inpaint_mask.numpy()[0] * 255).astype("uint8")).convert("RGB")
         panels = [Image.fromarray(pp.image), tensor_to_pil(b.agnostic_rgb), mask,
                   tensor_to_pil(b.control_normal), tensor_to_pil(b.control_depth_sil),
                   tensor_to_pil(b.appearance_ref)]
         rows.append([p.convert("RGB").resize((TH, hh), Image.LANCZOS) for p in panels])
-        print(f"OK {pid}: {len(panels)} panels")
+        print(f"OK {pid} x {gid}")
 
     if not rows:
         raise SystemExit("ERROR: no person could be prepared")
