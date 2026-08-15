@@ -38,12 +38,21 @@ from meshvton2.utils.image_utils import tensor_to_pil  # noqa: E402
 HEADS = ["input photograph", "agnostic", "inpainting mask",
          "normal map", "depth + silhouette", "appearance reference"]
 
+# Persons whose camera fit passed the gate in calibrate_hang.py — on these the projected body
+# demonstrably lands on the photograph, so the geometry panels illustrate the method rather than
+# a regression failure.
+CAMERA_VERIFIED = ("00000_00", "02935_00", "01455_00", "00737_00", "02199_00")
+
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--idm-repo", type=Path, required=True)
-    ap.add_argument("--persons", nargs="+", default=None, help="default: the first two")
-    ap.add_argument("--garment", default=None, help="default: the first garment in the manifest")
+    ap.add_argument("--persons", nargs="+", default=None,
+                    help="default: the first two persons whose camera fit was verified")
+    ap.add_argument("--garments", nargs="+", default=None,
+                    help="one garment per row; a single value is reused for every row. "
+                         "Default: a different qualifying garment per row, so the appearance "
+                         "column carries information instead of repeating")
     ap.add_argument("--thumb", type=int, default=220)
     ap.add_argument("--use-texture", action="store_true",
                     help="render the appearance reference WITH its texture. Match whatever the "
@@ -61,7 +70,10 @@ def main() -> int:
 
     by_pid = {p.id: p for p in manifest.persons}
     by_gid = {g.id: g for g in manifest.garments}
-    pids = args.persons or [p.id for p in manifest.persons[:2]]
+    # The default persons are the ones whose camera fit was verified (calibrate_hang.py): on those
+    # the mesh demonstrably projects onto the body, which is what this figure is meant to show.
+    verified = [p for p in CAMERA_VERIFIED if p in by_pid]
+    pids = args.persons or (verified or [p.id for p in manifest.persons])[:2]
 
     def load(g):
         p = garments_root / g.mesh if g.mesh else None
@@ -77,30 +89,41 @@ def main() -> int:
     def usable(a) -> bool:
         return a is not None and a.texture is not None and a.uv is not None
 
-    cands = [by_gid[args.garment]] if args.garment else (
-        list(manifest.garments) if args.use_texture else [by_gid[manifest.combos[0].garment_id]])
+    def pick(order) -> list:
+        """Loads garments in `order`, keeping those this run can actually render."""
+        out = []
+        for g in order:
+            a = load(g)
+            if a is None or (args.use_texture and not usable(a)):
+                continue
+            out.append((g.id, a))
+        return out
 
-    asset = None
-    for g in cands:
-        a = load(g)
-        if a is None:
-            continue
-        if args.use_texture and not usable(a):
-            continue
-        asset, gid = a, g.id
-        break
+    if args.garments:
+        chosen = pick([by_gid[g] for g in args.garments])
+        if len(chosen) < len(args.garments):
+            bad = set(args.garments) - {gid for gid, _ in chosen}
+            raise SystemExit(f"ERROR: cannot render with {sorted(bad)} under the current flags")
+        if len(chosen) == 1:
+            chosen *= len(pids)
+    else:
+        chosen = pick(manifest.garments)
 
-    if asset is None:
+    if not chosen:
         if args.use_texture:
             raise SystemExit(
                 "ERROR: --use-texture was given but no garment in the manifest loads with both a "
-                f"texture and UV coordinates (searched {len(cands)} under {garments_root}). Drop "
-                "--use-texture to render the grey shaded reference, or restore a manifest that "
-                "records textures.")
+                f"texture and UV coordinates (searched {len(manifest.garments)} under "
+                f"{garments_root}). Drop --use-texture to render the grey shaded reference, or "
+                "restore a manifest that records textures.")
         print(f"NOTE: no garment mesh found under {garments_root} — falling back to body-only "
               f"geometry; the silhouette panel will show the body only.", file=sys.stderr)
-    else:
-        print(f"garment: {gid} (texture={'yes' if usable(asset) else 'no'})")
+        chosen = [("(body only)", None)]
+
+    # One garment per row, cycling if fewer garments than persons.
+    per_row = [chosen[i % len(chosen)] for i in range(len(pids))]
+    for pid, (gid, _) in zip(pids, per_row):
+        print(f"row: {pid} x {gid}")
 
     prep = PersonPreprocessor(args.idm_repo)
     hmr2 = build_hmr2_backend()
@@ -110,7 +133,7 @@ def main() -> int:
     HEAD = 24
     rows = []
 
-    for pid in pids:
+    for pid, (gid, asset) in zip(pids, per_row):
         if pid not in by_pid:
             print(f"SKIP {pid}: not in the manifest", file=sys.stderr)
             continue
