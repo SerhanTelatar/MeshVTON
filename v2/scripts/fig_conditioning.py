@@ -36,8 +36,15 @@ from meshvton2.eval.golden_set import load_manifest  # noqa: E402
 from meshvton2.utils.image_utils import tensor_to_pil  # noqa: E402
 
 # Column headers, in the order the panels are drawn. Kept short: they are printed at figure scale.
-HEADS = ["input photograph", "agnostic", "inpainting mask",
-         "normal map", "depth + silhouette", "appearance reference"]
+# Column key -> header text, in the order they are produced. --panels selects a subset.
+PANELS = {
+    "photo": "input photograph",
+    "agnostic": "agnostic",
+    "mask": "inpainting mask",
+    "normal": "normal map",
+    "depth": "depth + silhouette",
+    "ref": "appearance reference",
+}
 
 # Persons whose camera fit passed the gate in calibrate_hang.py — on these the projected body
 # demonstrably lands on the photograph, so the geometry panels illustrate the method rather than
@@ -60,6 +67,9 @@ def main() -> int:
                     help="score every person x garment combination by mesh-parser silhouette IoU "
                          "(the measure the calibration uses) and draw the best N as rows. "
                          "Selection is then by measurement rather than by eye")
+    ap.add_argument("--panels", nargs="+", default=None, metavar="NAME",
+                    help=f"which columns to draw, in order. Available: {', '.join(PANELS)}. "
+                         "Six panels need a two-column figure*; for a single column drop to four")
     ap.add_argument("--thumb", type=int, default=220)
     ap.add_argument("--use-texture", action="store_true",
                     help="render the appearance reference WITH its texture. Match whatever the "
@@ -175,6 +185,11 @@ def main() -> int:
         for pid, (gid, _) in plan:
             print(f"row: {pid} x {gid}")
 
+    keys = args.panels or list(PANELS)
+    bad = [k for k in keys if k not in PANELS]
+    if bad:
+        raise SystemExit(f"ERROR: unknown panel {bad}; available: {', '.join(PANELS)}")
+
     TH = args.thumb
     hh = round(TH * size[0] / size[1])
     HEAD = 24
@@ -187,20 +202,24 @@ def main() -> int:
         pp, _, _ = prepare(pid)
         b = build(pid, asset)
 
-        mask = Image.fromarray((b.inpaint_mask.numpy()[0] * 255).astype("uint8")).convert("RGB")
-        panels = [Image.fromarray(pp.image), tensor_to_pil(b.agnostic_rgb), mask,
-                  tensor_to_pil(b.control_normal), tensor_to_pil(b.control_depth_sil),
-                  tensor_to_pil(b.appearance_ref)]
-        rows.append([p.convert("RGB").resize((TH, hh), Image.LANCZOS) for p in panels])
+        avail = {
+            "photo": Image.fromarray(pp.image),
+            "agnostic": tensor_to_pil(b.agnostic_rgb),
+            "mask": Image.fromarray((b.inpaint_mask.numpy()[0] * 255).astype("uint8")),
+            "normal": tensor_to_pil(b.control_normal),
+            "depth": tensor_to_pil(b.control_depth_sil),
+            "ref": tensor_to_pil(b.appearance_ref),
+        }
+        rows.append([avail[k].convert("RGB").resize((TH, hh), Image.LANCZOS) for k in keys])
         print(f"OK {pid} x {gid}")
 
     if not rows:
         raise SystemExit("ERROR: no person could be prepared")
 
-    im = Image.new("RGB", (TH * len(HEADS), HEAD + hh * len(rows)), "white")
+    im = Image.new("RGB", (TH * len(keys), HEAD + hh * len(rows)), "white")
     d = ImageDraw.Draw(im)
-    for i, t in enumerate(HEADS):
-        d.text((i * TH + 5, 7), t, fill="black")
+    for i, k in enumerate(keys):
+        d.text((i * TH + 5, 7), PANELS[k], fill="black")
     for r, panels in enumerate(rows):
         for c, p in enumerate(panels):
             im.paste(p, (c * TH, HEAD + r * hh))
