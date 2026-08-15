@@ -62,21 +62,45 @@ def main() -> int:
     by_pid = {p.id: p for p in manifest.persons}
     by_gid = {g.id: g for g in manifest.garments}
     pids = args.persons or [p.id for p in manifest.persons[:2]]
-    gid = args.garment or manifest.combos[0].garment_id
 
-    garment = by_gid.get(gid)
-    mesh_path = (garments_root / garment.mesh) if (garment and garment.mesh) else None
+    def load(g):
+        p = garments_root / g.mesh if g.mesh else None
+        if not (p and p.exists()):
+            return None
+        return load_garment_asset(
+            p, texture_path=garments_root / g.texture if g.texture else None,
+            garment_id=g.id, allow_untextured=True)
+
+    # render_appearance_ref needs BOTH a texture and UV coordinates (render.py::render_appearance_ref).
+    # A manifest entry can name a texture whose mesh still carries no UVs, so decide on the LOADED
+    # asset rather than on the manifest, and walk the candidates until one actually qualifies.
+    def usable(a) -> bool:
+        return a is not None and a.texture is not None and a.uv is not None
+
+    cands = [by_gid[args.garment]] if args.garment else (
+        list(manifest.garments) if args.use_texture else [by_gid[manifest.combos[0].garment_id]])
+
     asset = None
-    if mesh_path and mesh_path.exists():
-        asset = load_garment_asset(
-            mesh_path,
-            texture_path=garments_root / garment.texture if garment.texture else None,
-            garment_id=garment.id, allow_untextured=True)
+    for g in cands:
+        a = load(g)
+        if a is None:
+            continue
+        if args.use_texture and not usable(a):
+            continue
+        asset, gid = a, g.id
+        break
+
+    if asset is None:
+        if args.use_texture:
+            raise SystemExit(
+                "ERROR: --use-texture was given but no garment in the manifest loads with both a "
+                f"texture and UV coordinates (searched {len(cands)} under {garments_root}). Drop "
+                "--use-texture to render the grey shaded reference, or restore a manifest that "
+                "records textures.")
+        print(f"NOTE: no garment mesh found under {garments_root} — falling back to body-only "
+              f"geometry; the silhouette panel will show the body only.", file=sys.stderr)
     else:
-        # Without the mesh the geometry is body-only: the normal map and the mask are still
-        # produced, but the garment silhouette is not. Say so rather than drawing a blank panel.
-        print(f"NOTE: garment mesh not found ({mesh_path}) — falling back to body-only geometry; "
-              f"the silhouette panel will show the body only.", file=sys.stderr)
+        print(f"garment: {gid} (texture={'yes' if usable(asset) else 'no'})")
 
     prep = PersonPreprocessor(args.idm_repo)
     hmr2 = build_hmr2_backend()
