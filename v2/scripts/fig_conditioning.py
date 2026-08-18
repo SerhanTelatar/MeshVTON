@@ -54,6 +54,12 @@ CAMERA_VERIFIED = ("00000_00", "02935_00", "01455_00", "00737_00", "02199_00")
 ATR_GARMENT = (4, 7)  # upper-body labels in the parser, as used by calibrate_hang.py
 
 
+def _bottom(mask) -> int:
+    """Lowest row a mask occupies; -1 when it is empty."""
+    rows = mask.any(axis=1).nonzero()[0]
+    return int(rows[-1]) if len(rows) else -1
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--idm-repo", type=Path, required=True)
@@ -173,12 +179,20 @@ def main() -> int:
             for gid, asset in chosen:
                 sil = build(pid, asset).control_depth_sil[2].numpy() > 0
                 union = (sil | worn).sum()
-                scored.append((float((sil & worn).sum() / union) if union else 0.0, pid, gid, asset))
+                iou = float((sil & worn).sum() / union) if union else 0.0
+                # Two diagnostics behind the "the geometry columns look wrong" impression: a
+                # rendered garment much larger than the worn one, and a hem that hangs far below
+                # it. Neither is visible in the IoU alone, so both are printed with the ranking.
+                area = float(sil.sum() / worn.sum()) if worn.any() else float("nan")
+                hem = float((_bottom(sil) - _bottom(worn)) / sil.shape[0])
+                scored.append((iou, area, hem, pid, gid, asset))
         scored.sort(reverse=True, key=lambda r: r[0])
-        print("\ntop combinations by mesh-parser IoU:")
-        for iou, pid, gid, _ in scored[: args.rank]:
-            print(f"  {iou:.3f}  {pid} x {gid}")
-        plan = [(pid, (gid, asset)) for _, pid, gid, asset in scored[: args.rank]]
+        print("\ntop combinations by mesh-parser IoU "
+              "(area = rendered/worn garment area, hem = how far below the worn garment the "
+              "rendered one ends, in image heights; both closer to 0 is better):")
+        for iou, area, hem, pid, gid, _ in scored[: max(args.rank, 10)]:
+            print(f"  IoU {iou:.3f}  area {area:5.2f}  hem {hem:+.3f}  {pid} x {gid}")
+        plan = [(pid, (gid, asset)) for _, _, _, pid, gid, asset in scored[: args.rank]]
     else:
         # One garment per row, cycling if fewer garments than persons.
         plan = list(zip(pids, [chosen[i % len(chosen)] for i in range(len(pids))]))

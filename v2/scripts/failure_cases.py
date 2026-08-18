@@ -82,7 +82,14 @@ def main() -> int:
 
     base = yaml.safe_load((REPO / "v2/configs/base.yaml").read_text())
     cfg = yaml.safe_load((REPO / "v2/configs/eval.yaml").read_text())
-    manifest = load_manifest(REPO / cfg["golden_manifest"])
+    # The manifest is only a fallback source of person photographs and it lives under the
+    # gitignored data root, so a machine that has nothing but a restored eval_results folder
+    # still builds the figure (the person column is then taken from the .person.png files).
+    manifest_path = REPO / cfg["golden_manifest"]
+    manifest = load_manifest(manifest_path) if manifest_path.is_file() else None
+    if manifest is None:
+        print(f"NOTE: no golden manifest at {manifest_path} — the person column falls back to "
+              "the .person.png aux files.", file=sys.stderr)
     out_root = REPO / base["paths"]["eval_results"]
     pred_set = args.pred_set or args.report.stem
     pred_dir = out_root / pred_set / "preds"
@@ -91,7 +98,7 @@ def main() -> int:
     fig_dir = out_root / "figures"
     fig_dir.mkdir(parents=True, exist_ok=True)
 
-    by_pid = {p.id: p for p in manifest.persons}
+    by_pid = {p.id: p for p in manifest.persons} if manifest else {}
     TH = args.thumb
     hh = round(TH * base["resolution"]["height"] / base["resolution"]["width"])
     sz = (hh, TH)
@@ -129,7 +136,7 @@ def main() -> int:
         if p.exists():
             return p
         g = by_pid.get(pid)
-        q = (manifest.root / g.image) if g else None
+        q = (manifest.root / g.image) if (manifest and g) else None
         return q if q is not None and q.exists() else None
 
     all_cases = [r for _, _, cs in picks for r in cs]
