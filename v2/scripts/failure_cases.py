@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""Builds the FAILURE-CASE figure and a failure taxonomy from an existing eval report.
+"""Builds the CASE figure and a failure taxonomy from an existing eval report.
 
 Reporting what does not work is part of the assessment, and a limitations section carries far
 more weight when the failures are selected by measurement rather than by eye. This script ranks
-every evaluated combination by the metric that defines each failure mode, takes the worst cases,
-and lays them out with their measured values printed on the panel.
+every evaluated combination by the metric that defines each failure mode, takes the extreme
+cases, and lays them out with their measured values printed on the panel.
+
+--rank selects which end of each ranking is shown. The metrics span a wide range (see the
+report), so showing only the worst end misrepresents the method: --rank both puts the best and
+the worst cases of the same metric in one figure and makes the spread visible.
 
 NO diffusion, NO GPU — it reads the report JSON and the PNGs already written by
 eval_checkpoint.py.
@@ -17,7 +21,7 @@ Failure modes, each keyed to the metric that detects it:
 
 Usage:
   python v2/scripts/failure_cases.py --report v2/eval_results/ckpt_control_on_july.json
-  [--set ckpt_control_on_july] [--top 4] [--thumb 220]
+  [--set ckpt_control_on_july] [--top 4] [--thumb 220] [--rank both]
 """
 
 from __future__ import annotations
@@ -37,9 +41,13 @@ from PIL import Image, ImageDraw  # noqa: E402
 from meshvton2.eval.golden_set import load_manifest  # noqa: E402
 
 MODES = {
-    # key: (metric, worst = highest?, panel title)
-    "colour": ("garment_delta_e", True, "colour not transferred (high dE)"),
-    "placement": ("geo_iou", False, "garment does not follow the silhouette (low geo_IoU)"),
+    # key: (metric, worst = highest?, worst-end title, best-end title)
+    "colour": ("garment_delta_e", True,
+               "colour not transferred (high dE)",
+               "colour transferred (low dE)"),
+    "placement": ("geo_iou", False,
+                  "garment does not follow the silhouette (low geo_IoU)",
+                  "garment follows the silhouette (high geo_IoU)"),
 }
 
 
@@ -54,7 +62,10 @@ def main() -> int:
     ap.add_argument("--report", type=Path, required=True)
     ap.add_argument("--set", dest="pred_set", default=None,
                     help="preds folder under eval_results; default: the report file name")
-    ap.add_argument("--top", type=int, default=4, help="worst N cases per failure mode")
+    ap.add_argument("--top", type=int, default=4, help="N cases per block")
+    ap.add_argument("--rank", choices=("worst", "best", "both"), default="worst",
+                    help="which end of each ranking to show; 'both' adds a best-case block "
+                         "above every worst-case block")
     ap.add_argument("--per-row", type=int, default=2,
                     help="cases per row inside a block: 4 = wide (\\begin{figure*}), "
                          "2 = roughly square, 1 = tall single column")
@@ -87,15 +98,20 @@ def main() -> int:
     stem = lambda pid, gid: (pred_dir / cfg["pred_pattern"].format(
         person_id=pid, garment_id=gid, angle=args.angle)).with_suffix("")
 
-    # ---- pick the worst cases per mode, by measurement ----
+    # ---- pick the extreme cases per mode, by measurement ----
+    ends = ("best", "worst") if args.rank == "both" else (args.rank,)
     picks: list[tuple[str, str, list[dict]]] = []
-    for key, (metric, worst_high, title) in MODES.items():
+    for key, (metric, worst_high, worst_title, best_title) in MODES.items():
         vals = [r for r in rows if isinstance(r.get(metric), (int, float))]
         if not vals:
             print(f"SKIP {key}: '{metric}' is missing from the report", file=sys.stderr)
             continue
+        # worst_high says which direction is the failure, so the best end is the opposite sort
         vals.sort(key=lambda r: r[metric], reverse=worst_high)
-        picks.append((key, title, vals[: args.top]))
+        for end in ends:
+            ranked = vals if end == "worst" else vals[::-1]
+            title = f"{end}: " + (worst_title if end == "worst" else best_title)
+            picks.append((key, title, ranked[: args.top]))
         arr = np.array([r[metric] for r in vals], float)
         print(f"{key:11s} {metric:18s} n={len(arr)} mean={arr.mean():.3f} "
               f"worst={arr[0] if worst_high else arr.min():.3f} "
@@ -164,10 +180,11 @@ def main() -> int:
                 d.line([x0, y, x0, y + hh], fill=(200, 200, 200), width=2)
 
     d.text((4, im.height - FOOT + 4), f"each case: {' | '.join(cols)}", fill="black")
-    out = fig_dir / f"fig_failures__{pred_set}.png"
+    suffix = "" if args.rank == "worst" else f"__{args.rank}"
+    out = fig_dir / f"fig_failures__{pred_set}{suffix}.png"
     im.save(out)
     print(f"\n{out}")
-    print("Selected BY MEASUREMENT (worst per metric), not by eye — say so in the caption.")
+    print(f"Selected BY MEASUREMENT ({args.rank} per metric), not by eye — say so in the caption.")
     return 0
 
 
