@@ -39,6 +39,7 @@ from meshvton2.utils.image_utils import tensor_to_pil  # noqa: E402
 # Column key -> header text, in the order they are produced. --panels selects a subset.
 PANELS = {
     "photo": "input photograph",
+    "overlay": "silhouette on photo",
     "agnostic": "agnostic",
     "mask": "inpainting mask",
     "normal": "normal map",
@@ -52,6 +53,22 @@ PANELS = {
 CAMERA_VERIFIED = ("00000_00", "02935_00", "01455_00", "00737_00", "02199_00")
 
 ATR_GARMENT = (4, 7)  # upper-body labels in the parser, as used by calibrate_hang.py
+
+
+def _outline(photo, rendered, worn):
+    """The photograph with two contours: the rendered garment silhouette and the garment region
+    the parser finds on that same photograph.
+
+    The geometry panels show a CLOTH3D mesh in its own drape, which does not resemble the garment
+    the subject is wearing and therefore reads as an error. This panel shows what the conditioning
+    is actually claimed to do — land on the right part of the body — against a reference that does
+    not come from our pipeline. It is the IoU of the ranking, drawn.
+    """
+    im = np.ascontiguousarray(photo.copy())
+    for mask, colour in ((worn, (60, 220, 60)), (rendered, (235, 40, 40))):
+        c, _ = cv2.findContours(mask.astype("uint8"), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(im, c, -1, colour, 3)
+    return im
 
 
 def _bottom(mask) -> int:
@@ -213,11 +230,13 @@ def main() -> int:
         if pid not in by_pid:
             print(f"SKIP {pid}: not in the manifest", file=sys.stderr)
             continue
-        pp, _, _ = prepare(pid)
+        pp, _, worn = prepare(pid)
         b = build(pid, asset)
 
         avail = {
             "photo": Image.fromarray(pp.image),
+            "overlay": Image.fromarray(
+                _outline(pp.image, b.control_depth_sil[2].numpy() > 0, worn)),
             "agnostic": tensor_to_pil(b.agnostic_rgb),
             "mask": Image.fromarray((b.inpaint_mask.numpy()[0] * 255).astype("uint8")),
             "normal": tensor_to_pil(b.control_normal),
