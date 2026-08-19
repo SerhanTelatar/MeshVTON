@@ -73,3 +73,5 @@ frontend/.next/
 *.tmp
 .env.local
 .env.production
+
+.claude
